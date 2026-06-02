@@ -2,11 +2,13 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useToast } from '../context/ToastContext'
-import { calculateLeaveDays, getLeavePolicyOptions, normalizeLeaveType } from '../lib/leaveUtils'
+import { applyCompanyFilter, withCompanyScope } from '../services/tenantScope'
+import { attendanceService } from '../services/attendanceService'
+import { getLeavePolicyOptions, normalizeLeaveType, applySandwichRule } from '../lib/leaveUtils'
 import { calculateAnnualTax, calculateMonthlyTdsFromDeclaration, getIndianFinancialYear } from '../lib/taxUtils'
 import {
     User, Calendar, Mail, FileText, CheckCircle, AlertCircle,
-    X, ChevronDown, Check, Search, MoreHorizontal
+    ChevronDown, Check, Search, MoreHorizontal, Bell
 } from 'lucide-react'
 
 import PortalPersonalTab from './portal/PortalPersonalTab'
@@ -16,6 +18,7 @@ import PortalTimeOffTab from './portal/PortalTimeOffTab'
 import PortalPerformanceTab from './portal/PortalPerformanceTab'
 import PortalDocumentsTab from './portal/PortalDocumentsTab'
 import PortalExitTab from './portal/PortalExitTab'
+import PortalPrivacyTab from './portal/PortalPrivacyTab'
 
 // --- Mock Data / Components ---
 
@@ -106,7 +109,7 @@ const EmployeeCombobox = ({ employees, selectedId, onChange }) => {
                                 >
                                     <div>
                                         <p className="text-sm font-bold">{emp.first_name} {emp.last_name}</p>
-                                        <p className="text-xs opacity-70">{emp.employee_id} â€¢ {emp.designation}</p>
+                                        <p className="text-xs opacity-70">{emp.employee_id} • {emp.designation}</p>
                                     </div>
                                     {selectedId === emp.id && <Check className="w-4 h-4" />}
                                 </div>
@@ -159,6 +162,61 @@ export default function EmployeePortal() {
     const [punching, setPunching] = useState(false)
     const [currentTime, setCurrentTime] = useState(new Date())
     const [userIp, setUserIp] = useState('Detecting...')
+    const [workMode, setWorkMode] = useState('WFO') // State for WFH, WFO, Client Site
+
+    // ESS Inbox Notifications State
+    const [unreadNotifications, setUnreadNotifications] = useState([])
+    const [showNotificationsDropdown, setShowNotificationsDropdown] = useState(false)
+
+    // Fetch unread notifications
+    useEffect(() => {
+        const fetchNotifications = async () => {
+            if (!viewAsId) {
+                setUnreadNotifications([])
+                return
+            }
+            try {
+                const { data, error } = await supabase
+                    .from('notification_logs')
+                    .select('*')
+                    .eq('employee_id', viewAsId)
+                    .eq('is_read', false)
+                    .order('created_at', { ascending: false })
+                if (error) throw error
+                setUnreadNotifications(data || [])
+            } catch (err) {
+                console.error('Error fetching unread notifications:', err)
+            }
+        }
+        fetchNotifications()
+    }, [viewAsId])
+
+    // Click outside handler for dropdown
+    useEffect(() => {
+        const handleClickOutside = (event) => {
+            if (!event.target.closest('.notification-bell-container')) {
+                setShowNotificationsDropdown(false)
+            }
+        }
+        document.addEventListener('mousedown', handleClickOutside)
+        return () => document.removeEventListener('mousedown', handleClickOutside)
+    }, [])
+
+    const handleMarkNotificationAsRead = async (notificationId) => {
+        try {
+            const { error } = await supabase
+                .from('notification_logs')
+                .update({ is_read: true })
+                .eq('id', notificationId)
+            if (error) throw error
+
+            setUnreadNotifications(prev => prev.filter(n => n.id !== notificationId))
+            toast.success('Notification marked as read')
+        } catch (err) {
+            console.error('Error marking notification as read:', err)
+            toast.error('Failed to update notification: ' + err.message)
+        }
+    }
 
     // Regularization States
     const [regularizationRequests, setRegularizationRequests] = useState([])
@@ -187,31 +245,74 @@ export default function EmployeePortal() {
         }
     }
 
+    const getGeolocation = () => {
+        return new Promise((resolve) => {
+            if (!navigator.geolocation) {
+                toast.warning('Geolocation is not supported by your browser. Punch location will not be recorded.')
+                resolve(null)
+                return
+            }
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const { latitude, longitude } = position.coords
+                    resolve(`point(${longitude}, ${latitude})`)
+                },
+                (error) => {
+                    console.warn('Geolocation error:', error)
+                    toast.warning('Geolocation permission denied or unavailable. Punch location will not be recorded.')
+                    resolve(null)
+                },
+                { enableHighAccuracy: true, timeout: 5000 }
+            )
+        })
+    }
+
     const fetchTodayPunch = async (empId) => {
         if (!empId) return
         try {
             const todayStr = new Date().toISOString().split('T')[0]
-            const { data, error } = await supabase
-                .from('attendance_punches')
-                .select('*')
+            const { data, error } = await applyCompanyFilter(
+                supabase
+                    .from('attendance_punches')
+                    .select('*')
+            )
                 .eq('employee_id', empId)
                 .eq('date', todayStr)
                 .maybeSingle()
             if (error) throw error
-            setTodayPunch(data || null)
+
+            if (data) {
+                // Enrich punch record with work_mode from daily attendance
+                const { data: attRecord } = await applyCompanyFilter(
+                    supabase
+                        .from('attendance')
+                        .select('work_mode, punch_location')
+                )
+                    .eq('employee_id', empId)
+                    .eq('date', todayStr)
+                    .maybeSingle()
+
+                setTodayPunch({
+                    ...data,
+                    work_mode: attRecord?.work_mode ? (attRecord.work_mode === 'hybrid' ? 'Client Site' : attRecord.work_mode.toUpperCase()) : 'WFO',
+                    punch_location: attRecord?.punch_location || null
+                })
+            } else {
+                setTodayPunch(null)
+            }
         } catch (err) {
             console.error('Error fetching today punch:', err)
         }
     }
 
-
-
     const fetchRegularizationRequests = async (empId) => {
         if (!empId) return
         try {
-            const { data, error } = await supabase
-                .from('attendance_regularizations')
-                .select('*')
+            const { data, error } = await applyCompanyFilter(
+                supabase
+                    .from('attendance_regularizations')
+                    .select('*')
+            )
                 .eq('employee_id', empId)
                 .order('date', { ascending: false })
             if (error) throw error
@@ -228,17 +329,40 @@ export default function EmployeePortal() {
             const todayStr = new Date().toISOString().split('T')[0]
             const punchInTime = new Date().toISOString()
             
+            // Capture GPS location
+            const dbPunchLocation = await getGeolocation()
+            
+            // Map work_mode
+            const dbWorkMode = workMode === 'Client Site' ? 'hybrid' : workMode.toLowerCase()
+
+            // 1. Insert into punches table
             const { error } = await supabase
                 .from('attendance_punches')
-                .insert([{
+                .insert([withCompanyScope({
                     employee_id: viewAsId,
                     date: todayStr,
                     punch_in: punchInTime,
                     ip_address: userIp
-                }])
+                })])
             if (error) throw error
 
-            toast.success('Successfully Punched In! Have a great shift!')
+            // 2. Also initialize daily attendance record
+            const { error: attError } = await supabase
+                .from('attendance')
+                .upsert(withCompanyScope({
+                    employee_id: viewAsId,
+                    date: todayStr,
+                    status: 'present',
+                    check_in: punchInTime,
+                    check_out: null,
+                    remarks: `Punched In (${workMode})`,
+                    work_mode: dbWorkMode,
+                    punch_location: dbPunchLocation
+                }), { onConflict: 'employee_id, date' })
+
+            if (attError) throw attError
+
+            toast.success(`Successfully Punched In (${workMode})! Have a great shift!`)
             await fetchTodayPunch(viewAsId)
         } catch (err) {
             toast.error('Error punching in: ' + err.message)
@@ -256,7 +380,13 @@ export default function EmployeePortal() {
             const diffMs = new Date(punchOutTime) - punchInTime
             const workingHours = Number((diffMs / (1000 * 60 * 60)).toFixed(2))
 
-            // 1. Update attendance_punches
+            // Capture GPS location
+            const dbPunchLocation = await getGeolocation()
+
+            // Map work_mode
+            const dbWorkMode = workMode === 'Client Site' ? 'hybrid' : workMode.toLowerCase()
+
+            // 1. Update punches table
             const { error: punchError } = await supabase
                 .from('attendance_punches')
                 .update({
@@ -272,20 +402,30 @@ export default function EmployeePortal() {
             if (workingHours <= 4) status = 'absent'
             else if (workingHours < 8) status = 'half_day'
 
-            // 3. Upsert into attendance table
+            // 3. Upsert into daily attendance table
             const todayStr = new Date().toISOString().split('T')[0]
-            const { error: attError } = await supabase
+            const { data: attData, error: attError } = await supabase
                 .from('attendance')
-                .upsert({
+                .upsert(withCompanyScope({
                     employee_id: viewAsId,
                     date: todayStr,
                     status: status,
                     check_in: todayPunch.punch_in,
                     check_out: punchOutTime,
-                    remarks: `Web Punch-In (${workingHours} hrs worked)`
-                }, { onConflict: 'employee_id, date' })
+                    remarks: `Web Punch-In (${workingHours} hrs worked)`,
+                    work_mode: dbWorkMode,
+                    punch_location: dbPunchLocation
+                }), { onConflict: 'employee_id, date' })
+                .select()
+                .single()
 
             if (attError) throw attError
+
+            // 4. Trigger Overtime & Comp-Off Auto calculations in backend service
+            if (attData) {
+                await attendanceService.calculateAndSaveOvertime(attData.id, todayPunch.punch_in, punchOutTime, viewAsId, todayStr)
+                await attendanceService.calculateAndCreditCompOff(viewAsId, todayStr)
+            }
 
             toast.success(`Successfully Punched Out! Worked ${workingHours} hours.`)
             await fetchTodayPunch(viewAsId)
@@ -302,9 +442,11 @@ export default function EmployeePortal() {
         setSubmittingRegularize(true)
         try {
             // Check if a request already exists for this date
-            const { data: existing } = await supabase
-                .from('attendance_regularizations')
-                .select('id')
+            const { data: existing } = await applyCompanyFilter(
+                supabase
+                    .from('attendance_regularizations')
+                    .select('id')
+            )
                 .eq('employee_id', viewAsId)
                 .eq('date', regularizeForm.date)
                 .maybeSingle()
@@ -317,13 +459,13 @@ export default function EmployeePortal() {
 
             const { error } = await supabase
                 .from('attendance_regularizations')
-                .insert([{
+                .insert([withCompanyScope({
                     employee_id: viewAsId,
                     date: regularizeForm.date,
                     requested_status: regularizeForm.requested_status,
                     reason: regularizeForm.reason,
                     status: 'pending'
-                }])
+                })])
 
             if (error) throw error
 
@@ -402,9 +544,11 @@ export default function EmployeePortal() {
                 if (['admin', 'hr', 'HR'].includes(emp.role)) {
                     setIsAdmin(true)
                     // Fetch all employees for "View As" dropdown
-                    const { data: allEmps } = await supabase
-                        .from('employees')
-                        .select('id, first_name, last_name, employee_id, designation')
+                    const { data: allEmps } = await applyCompanyFilter(
+                        supabase
+                            .from('employees')
+                            .select('id, first_name, last_name, employee_id, designation')
+                    )
                         .eq('status', 'active')
                     if (allEmps) setEmployees(allEmps)
                 }
@@ -440,60 +584,78 @@ export default function EmployeePortal() {
                     exitRes,
                     declarationRes
                 ] = await Promise.all([
-                    supabase
-                        .from('employees')
-                        .select('*')
+                    applyCompanyFilter(
+                        supabase
+                            .from('employees')
+                            .select('*')
+                    )
                         .eq('id', viewAsId)
                         .single(),
-                    supabase
-                        .from('payroll_items')
-                        .select(`
-                            id, 
-                            net_salary, 
-                            basic_salary,
-                            total_deductions, 
-                            total_allowances,
-                            attendance_days,
-                            breakdown,
-                            payroll_run_id,
-                            payroll_run:payroll_runs ( month_year, status )
-                        `)
+                    applyCompanyFilter(
+                        supabase
+                            .from('payroll_items')
+                            .select(`
+                                id, 
+                                net_salary, 
+                                basic_salary,
+                                total_deductions, 
+                                total_allowances,
+                                attendance_days,
+                                breakdown,
+                                payroll_run_id,
+                                payroll_run:payroll_runs ( month_year, status )
+                            `)
+                    )
                         .eq('employee_id', viewAsId)
                         .order('created_at', { ascending: false }),
-                    supabase
-                        .from('leaves')
-                        .select('*')
+                    applyCompanyFilter(
+                        supabase
+                            .from('leaves')
+                            .select('*')
+                    )
                         .eq('employee_id', viewAsId)
                         .order('created_at', { ascending: false }),
-                    supabase
-                        .from('leave_policies')
-                        .select('*')
+                    applyCompanyFilter(
+                        supabase
+                            .from('leave_policies')
+                            .select('*')
+                    )
                         .order('leave_type'),
-                    supabase
-                        .from('leave_balances')
-                        .select('*')
+                    applyCompanyFilter(
+                        supabase
+                            .from('leave_balances')
+                            .select('*')
+                    )
                         .eq('employee_id', viewAsId)
                         .eq('year', currentYear)
                         .order('leave_type'),
-                    supabase
-                        .from('holidays')
-                        .select('date'),
-                    supabase
-                        .from('attendance')
-                        .select('*')
+                    applyCompanyFilter(
+                        supabase
+                            .from('holidays')
+                            .select('date')
+                    ),
+                    applyCompanyFilter(
+                        supabase
+                            .from('attendance')
+                            .select('*')
+                    )
                         .eq('employee_id', viewAsId)
                         .order('date', { ascending: false })
                         .limit(30),
-                    supabase
-                        .from('exits')
-                        .select('*')
+                    applyCompanyFilter(
+                        supabase
+                            .from('exits')
+                            .select('*')
+                    )
                         .eq('employee_id', viewAsId)
                         .order('created_at', { ascending: false })
                         .limit(1)
                         .maybeSingle(),
-                    supabase
-                        .from('tax_declarations')
-                        .select('*')
+                    applyCompanyFilter(
+                        supabase
+                            .from('tax_declarations')
+                            .select('*')
+                    )
                         .eq('employee_id', viewAsId)
                         .eq('financial_year', financialYear)
                         .maybeSingle()
@@ -577,42 +739,77 @@ export default function EmployeePortal() {
         }
 
         try {
-            const diffDays = calculateLeaveDays(leaveForm.startDate, leaveForm.endDate, holidays)
+            const diffDays = applySandwichRule(leaveForm.startDate, leaveForm.endDate, holidays)
             if (diffDays <= 0) {
                 toast.warning('Selected dates do not contain payable leave days. Weekends and holidays are excluded.')
                 return
             }
 
-            const { error } = await supabase.from('leaves').insert({
+            const isSickLeave = leaveForm.type === 'Sick Leave' || leaveForm.type === 'Sick'
+            if (isSickLeave && diffDays >= 3 && !leaveForm.medicalFile) {
+                toast.error('Medical certificate is strictly mandatory for sick leave of 3 or more days.')
+                return
+            }
+
+            let medicalDocUrl = null
+            if (leaveForm.medicalFile) {
+                const fileExt = leaveForm.medicalFile.name.split('.').pop()
+                const fileName = `${viewAsId}_sick_leave_${Date.now()}.${fileExt}`
+                const storagePath = `leaves/${fileName}`
+
+                const { error: uploadError } = await supabase.storage
+                    .from('employee-documents')
+                    .upload(storagePath, leaveForm.medicalFile, {
+                        cacheControl: '3600',
+                        upsert: true
+                    })
+
+                if (uploadError) {
+                    console.error('Storage upload error:', uploadError)
+                    toast.warning('File upload failed, proceeding without attachment.')
+                } else {
+                    const { data: publicUrlData } = supabase.storage
+                        .from('employee-documents')
+                        .getPublicUrl(storagePath)
+                    medicalDocUrl = publicUrlData?.publicUrl || null
+                }
+            }
+
+            const { error } = await supabase.from('leaves').insert([withCompanyScope({
                 employee_id: viewAsId,
                 leave_type: leaveForm.type,
                 start_date: leaveForm.startDate,
                 end_date: leaveForm.endDate,
                 reason: leaveForm.reason,
                 status: 'pending',
-                days: diffDays
-            })
+                days: diffDays,
+                medical_document_url: medicalDocUrl
+            })])
 
             if (error) throw error
 
             // Refresh leaves
-            const { data: updatedLeaves } = await supabase
-                .from('leaves')
-                .select('*')
+            const { data: updatedLeaves } = await applyCompanyFilter(
+                supabase
+                    .from('leaves')
+                    .select('*')
+            )
                 .eq('employee_id', viewAsId)
                 .order('created_at', { ascending: false })
             setLeaves(updatedLeaves || [])
 
-            const { data: updatedBalances } = await supabase
-                .from('leave_balances')
-                .select('*')
+            const { data: updatedBalances } = await applyCompanyFilter(
+                supabase
+                    .from('leave_balances')
+                    .select('*')
+            )
                 .eq('employee_id', viewAsId)
                 .eq('year', new Date().getFullYear())
                 .order('leave_type')
             setLeaveBalances(updatedBalances || [])
 
             setShowLeaveModal(false)
-            setLeaveForm({ type: '', startDate: '', endDate: '', reason: '' })
+            setLeaveForm({ type: '', startDate: '', endDate: '', reason: '', medicalFile: null })
             toast.success('Leave application submitted! Your request has been sent for approval.')
         } catch (error) {
             console.error('Error applying leave:', error)
@@ -772,7 +969,8 @@ export default function EmployeePortal() {
         })
         .slice(0, 2)
 
-    const monthlySalary = Number(currentEmployee?.salary || payslips?.[0]?.basic_salary || 0)
+    const monthlySalary = (Number(currentEmployee?.salary || 0) + Number(currentEmployee?.salary_allowances || 0)) ||
+        (Number(payslips?.[0]?.basic_salary || 0) + Number(payslips?.[0]?.total_allowances || 0)) || 0
     const annualSalary = monthlySalary * 12
     const ytdEarnings = payslips.reduce((sum, slip) => sum + (Number(slip.net_salary) || 0), 0)
     const payFrequency = 'Monthly'
@@ -842,7 +1040,7 @@ export default function EmployeePortal() {
 
             const { data, error } = await supabase
                 .from('tax_declarations')
-                .upsert(payload, { onConflict: 'employee_id,financial_year' })
+                .upsert(withCompanyScope(payload), { onConflict: 'employee_id,financial_year' })
                 .select('*')
                 .single()
 
@@ -868,8 +1066,8 @@ export default function EmployeePortal() {
 
 
             {currentEmployee && (
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-                    <div className="h-24 bg-gradient-to-r from-blue-600 to-blue-400"></div>
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm">
+                    <div className="h-24 bg-gradient-to-r from-blue-600 to-blue-400 rounded-t-2xl"></div>
                     <div className="px-6 pb-5 -mt-10">
                         <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6">
                             <div className="flex items-start gap-4 flex-1 min-w-0">
@@ -886,7 +1084,7 @@ export default function EmployeePortal() {
                                         <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-700">Active</span>
                                     </div>
                                     <p className="text-sm text-gray-600 mt-2">
-                                        {currentEmployee.designation || 'Employee'} â€¢ Employee ID: #{currentEmployee.employee_id}
+                                        {currentEmployee.designation || 'Employee'} • Employee ID: #{currentEmployee.employee_id}
                                     </p>
                                 </div>
                             </div>
@@ -899,6 +1097,61 @@ export default function EmployeePortal() {
                                         onChange={setViewAsId}
                                     />
                                 )}
+
+                                {/* Notification Bell Dropdown */}
+                                <div className="relative notification-bell-container">
+                                    <button
+                                        onClick={() => setShowNotificationsDropdown(!showNotificationsDropdown)}
+                                        className="h-11 w-11 rounded-lg border border-gray-200 text-gray-600 hover:bg-blue-50 hover:text-blue-700 transition-colors inline-flex items-center justify-center relative bg-white shadow-sm cursor-pointer"
+                                        title="Notifications"
+                                    >
+                                        <Bell className="w-5 h-5" />
+                                        {unreadNotifications.length > 0 && (
+                                            <span className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white rounded-full text-[10px] font-black w-5 h-5 flex items-center justify-center animate-bounce border-2 border-white shadow-sm">
+                                                {unreadNotifications.length}
+                                            </span>
+                                        )}
+                                    </button>
+
+                                    {showNotificationsDropdown && (
+                                        <div className="absolute right-0 mt-2 bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-200 w-80 max-w-sm">
+                                            <div className="p-4 border-b border-gray-50 bg-slate-50 flex items-center justify-between">
+                                                <span className="text-xs uppercase tracking-widest font-black text-slate-500">ESS Inbox Notifications</span>
+                                                {unreadNotifications.length > 0 && (
+                                                    <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
+                                                        {unreadNotifications.length} Unread
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <div className="max-h-72 overflow-y-auto divide-y divide-gray-50">
+                                                {unreadNotifications.length > 0 ? (
+                                                    unreadNotifications.map(notification => (
+                                                        <div
+                                                            key={notification.id}
+                                                            onClick={() => handleMarkNotificationAsRead(notification.id)}
+                                                            className="p-4 hover:bg-slate-50 cursor-pointer transition-colors text-left"
+                                                        >
+                                                            <p className="text-xs font-bold text-slate-800 leading-tight">
+                                                                {notification.subject || notification.notification_type || 'Notification'}
+                                                            </p>
+                                                            <p className="text-xs text-slate-500 mt-1 font-medium leading-normal">
+                                                                {notification.message || notification.metadata?.message || 'New update is available.'}
+                                                            </p>
+                                                            <p className="text-[9px] text-gray-400 mt-2 font-mono">
+                                                                {new Date(notification.created_at).toLocaleString()}
+                                                            </p>
+                                                        </div>
+                                                    ))
+                                                ) : (
+                                                    <div className="p-8 text-center text-xs text-gray-400 italic">
+                                                        No unread notifications
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+
                                 <button onClick={openEditProfileModal} className="h-11 px-4 rounded-lg border border-gray-200 text-sm font-bold text-slate-700 hover:bg-blue-50 hover:text-blue-700 transition-colors inline-flex items-center gap-2">
                                     <FileText className="w-4 h-4" /> Edit Profile
                                 </button>
@@ -920,7 +1173,8 @@ export default function EmployeePortal() {
                                     { key: 'timeoff', label: 'Time & Attendance' },
                                     { key: 'performance', label: 'Performance' },
                                     { key: 'documents', label: 'Documents' },
-                                    { key: 'exit', label: 'Exit Process' }
+                                    { key: 'exit', label: 'Exit Process' },
+                                    { key: 'privacy', label: 'Privacy & Data' }
                                 ].map(tab => (
                                     <button
                                         key={tab.key}
@@ -1016,6 +1270,8 @@ export default function EmployeePortal() {
                     handleApplyLeave={handleApplyLeave}
                     holidays={holidays}
                     loading={loading}
+                    workMode={workMode}
+                    setWorkMode={setWorkMode}
                 />
             )}
 
@@ -1039,6 +1295,7 @@ export default function EmployeePortal() {
                     currentEmployee={currentEmployee}
                     tenureText={tenureText}
                     formatDateSafe={formatDateSafe}
+                    toast={toast}
                 />
             )}
 
@@ -1062,6 +1319,16 @@ export default function EmployeePortal() {
                     setActiveExit={setActiveExit}
                     loading={loading}
                     setLoading={setLoading}
+                />
+            )}
+
+            {/* PRIVACY & DATA TAB */}
+            {activeTab === 'privacy' && (
+                <PortalPrivacyTab
+                    currentEmployee={currentEmployee}
+                    viewAsId={viewAsId}
+                    isAdmin={isAdmin}
+                    toast={toast}
                 />
             )}
 

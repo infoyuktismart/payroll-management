@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
+import { employeeService } from '../services/employeeService'
+import { attendanceService } from '../services/attendanceService'
 import { format } from 'date-fns'
 import { Plus, Check, X } from 'lucide-react'
 import Modal from '../components/ui/Modal'
 import clsx from 'clsx'
+import { logger } from '../lib/devLogger'
 
 export default function Overtime() {
     const { user, isAdmin } = useAuth()
@@ -23,7 +25,7 @@ export default function Overtime() {
 
     useEffect(() => {
         fetchCurrentEmployee()
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+         
     }, [user])
 
     useEffect(() => {
@@ -31,33 +33,36 @@ export default function Overtime() {
             fetchRequests()
             if (isAdmin) fetchEmployeesMap()
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+         
     }, [currentEmployee, isAdmin])
 
     const fetchCurrentEmployee = async () => {
         if (!user) return
-        const { data } = await supabase.from('employees').select('*').eq('email', user.email).single()
-        setCurrentEmployee(data)
+        try {
+            const data = await employeeService.getEmployeeByEmail(user.email)
+            setCurrentEmployee(data)
+        } catch (error) {
+            logger.error('Error fetching current employee:', error)
+        }
     }
 
     const fetchEmployeesMap = async () => {
-        const { data } = await supabase.from('employees').select('id, first_name, last_name')
-        const map = {}
-        data?.forEach(e => map[e.id] = `${e.first_name} ${e.last_name}`)
-        setEmployees(map)
+        try {
+            const data = await employeeService.getAllEmployees()
+            const map = {}
+            data?.forEach(e => map[e.id] = `${e.first_name} ${e.last_name}`)
+            setEmployees(map)
+        } catch (error) {
+            logger.error('Error fetching employees map:', error)
+        }
     }
 
     const fetchRequests = async () => {
         try {
-            let query = supabase.from('overtime').select('*').order('created_at', { ascending: false })
-            if (!isAdmin && currentEmployee) {
-                query = query.eq('employee_id', currentEmployee.id)
-            }
-            const { data, error } = await query
-            if (error) throw error
+            const data = await attendanceService.getOvertimeRequests({ employeeId: currentEmployee?.id, isAdmin })
             setRequests(data)
         } catch (error) {
-            console.error('Error fetching overtime:', error)
+            logger.error('Error fetching overtime:', error)
         } finally {
             setLoading(false)
         }
@@ -71,12 +76,10 @@ export default function Overtime() {
         }
 
         try {
-            const { error } = await supabase.from('overtime').insert([{
+            await attendanceService.createOvertimeRequest({
                 ...formData,
                 employee_id: currentEmployee.id
-            }])
-
-            if (error) throw error
+            })
             setIsModalOpen(false)
             fetchRequests()
             setFormData({ date: '', hours: '', reason: '' })
@@ -87,8 +90,7 @@ export default function Overtime() {
 
     const handleStatusChange = async (id, status) => {
         try {
-            const { error } = await supabase.from('overtime').update({ status }).eq('id', id)
-            if (error) throw error
+            await attendanceService.updateOvertimeStatus({ id, status })
             fetchRequests()
         } catch (error) {
             toast.error(error.message)
@@ -164,11 +166,11 @@ export default function Overtime() {
                                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                                             {request.status === 'pending' && (
                                                 <div className="flex justify-end space-x-2">
-                                                    <button onClick={() => handleStatusChange(request.id, 'approved')} className="text-green-600 hover:text-green-900 bg-green-50 p-1 rounded">
-                                                        <Check className="h-4 w-4" />
+                                                    <button onClick={() => handleStatusChange(request.id, 'approved')} aria-label="Approve overtime request" className="text-green-600 hover:text-green-900 bg-green-50 p-1 rounded">
+                                                        <Check className="h-4 w-4" aria-hidden="true" />
                                                     </button>
-                                                    <button onClick={() => handleStatusChange(request.id, 'rejected')} className="text-red-600 hover:text-red-900 bg-red-50 p-1 rounded">
-                                                        <X className="h-4 w-4" />
+                                                    <button onClick={() => handleStatusChange(request.id, 'rejected')} aria-label="Reject overtime request" className="text-red-600 hover:text-red-900 bg-red-50 p-1 rounded">
+                                                        <X className="h-4 w-4" aria-hidden="true" />
                                                     </button>
                                                 </div>
                                             )}

@@ -1,21 +1,23 @@
-import { useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
+import { useState, useMemo } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
-import { WalletCards, Banknote, Calendar, CheckCircle2, XCircle, Search, Plus, Loader2, Info, Landmark } from 'lucide-react'
+import { WalletCards, Banknote, CheckCircle2, XCircle, Search, Plus, Info, Landmark } from 'lucide-react'
 import { TableSkeleton } from '../components/ui/SkeletonLoader'
+import { useEmployees } from '../hooks/useEmployees'
+import { useLoans, useCreateLoan, useUpdateLoanStatus } from '../hooks/useLoansData'
+import Pagination from '../components/Pagination'
+import { sanitizeFormData } from '../lib/formUtils'
+import { logger } from '../lib/devLogger'
 
 const LOAN_TYPES = ['Advance Salary', 'Home Loan', 'Personal Loan', 'Education Loan']
 
 export default function Loans() {
     const toast = useToast()
     const { isAdmin } = useAuth()
-    const [loans, setLoans] = useState([])
-    const [employees, setEmployees] = useState([])
-    const [loading, setLoading] = useState(true)
     const [submitting, setSubmitting] = useState(false)
     const [activeTab, setActiveTab] = useState('all') // 'all', 'pending', 'active', 'closed'
     const [searchTerm, setSearchTerm] = useState('')
+    const [page, setPage] = useState(0)
 
     // Loan Form State
     const [showApplyModal, setShowApplyModal] = useState(false)
@@ -27,71 +29,33 @@ export default function Loans() {
         remarks: ''
     })
 
-    useEffect(() => {
-        fetchInitialData()
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [])
+    // React Query Queries
+    const { data: loansResponse, isLoading: loadingLoans } = useLoans({ page, pageSize: 50 })
+    const loans = useMemo(() => loansResponse?.data || [], [loansResponse])
+    const totalPages = loansResponse?.totalPages || 1
+    const count = loansResponse?.count || 0
 
-    const fetchInitialData = async () => {
-        try {
-            setLoading(true)
-            await Promise.all([
-                fetchLoans(),
-                fetchEmployees()
-            ])
-        } catch (error) {
-            console.error('Error fetching loans data:', error)
-            toast.error('Failed to load loans data.')
-        } finally {
-            setLoading(false)
-        }
-    }
+    const { data: employeesResponse, isLoading: loadingEmployees } = useEmployees({ page: 0, pageSize: 1000 })
+    const employees = useMemo(() => employeesResponse?.data || [], [employeesResponse])
 
-    const fetchLoans = async () => {
-        const { data, error } = await supabase
-            .from('employee_loans')
-            .select(`
-                *,
-                employee:employees(first_name, last_name, employee_id, designation, department)
-            `)
-            .order('created_at', { ascending: false })
+    const loading = loadingLoans || loadingEmployees
 
-        if (error) throw error
-        setLoans(data || [])
-    }
+    // React Query Mutations
+    const createLoanMutation = useCreateLoan()
+    const updateLoanMutation = useUpdateLoanStatus()
 
-    const fetchEmployees = async () => {
-        const { data, error } = await supabase
-            .from('employees')
-            .select('id, first_name, last_name, employee_id')
-            .eq('status', 'active')
-            .order('first_name')
-
-        if (error) throw error
-        setEmployees(data || [])
-    }
+    // Filter active employees in memory
+    const activeEmployees = useMemo(() => {
+        return employees.filter(emp => emp.status?.toLowerCase() === 'active')
+    }, [employees])
 
     const handleLoanAction = async (loanId, nextStatus) => {
         try {
             setSubmitting(true)
-            const updates = {
-                status: nextStatus,
-                updated_at: new Date().toISOString()
-            }
-            if (nextStatus === 'active') {
-                updates.disbursement_date = new Date().toISOString().split('T')[0]
-            }
-
-            const { error } = await supabase
-                .from('employee_loans')
-                .update(updates)
-                .eq('id', loanId)
-
-            if (error) throw error
+            await updateLoanMutation.mutateAsync({ id: loanId, status: nextStatus })
             toast.success(`Loan status updated to ${nextStatus}`)
-            await fetchLoans()
         } catch (error) {
-            console.error('Error updating loan status:', error)
+            logger.error('Error updating loan status:', error)
             toast.error('Failed to update loan status.')
         } finally {
             setSubmitting(false)
@@ -125,11 +89,7 @@ export default function Loans() {
                 remarks: loanForm.remarks
             }
 
-            const { error } = await supabase
-                .from('employee_loans')
-                .insert([payload])
-
-            if (error) throw error
+            await createLoanMutation.mutateAsync(sanitizeFormData(payload))
 
             toast.success('Loan application submitted successfully.')
             setShowApplyModal(false)
@@ -140,9 +100,8 @@ export default function Loans() {
                 tenure_months: 6,
                 remarks: ''
             })
-            await fetchLoans()
         } catch (error) {
-            console.error('Error submitting loan:', error)
+            logger.error('Error submitting loan:', error)
             toast.error('Failed to submit loan application.')
         } finally {
             setSubmitting(false)
@@ -246,7 +205,8 @@ export default function Loans() {
                     {/* Search bar */}
                     <div className="relative w-full sm:w-64">
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
-                        <input
+                        <label htmlFor="auto-id-loans-49" className="sr-only">Input field</label>
+                        <input id="auto-id-loans-49"
                             type="text"
                             placeholder="Search employee or type..."
                             value={searchTerm}
@@ -265,7 +225,7 @@ export default function Loans() {
                         <div className="flex flex-col items-center justify-center p-16 text-center">
                             <Banknote className="w-12 h-12 text-gray-300 mb-3" />
                             <h3 className="text-base font-bold text-gray-700">No loan records found</h3>
-                            <p className="text-xs text-gray-400 mt-1">There are no loan requests matching the selected category.</p>
+                            <p className="text-xs text-gray-600 mt-1">There are no loan requests matching the selected category.</p>
                         </div>
                     ) : (
                         <table className="w-full text-left border-collapse text-xs">
@@ -300,7 +260,7 @@ export default function Loans() {
                                         </td>
                                         <td className="p-4">
                                             <p className="font-bold text-slate-700">{loan.tenure_months} Months</p>
-                                            <p className="text-[10px] text-gray-400">{formatCurrency(loan.emi_amount)} / month</p>
+                                            <p className="text-[10px] text-gray-600">{formatCurrency(loan.emi_amount)} / month</p>
                                         </td>
                                         <td className="p-4">
                                             <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase ${
@@ -324,16 +284,18 @@ export default function Loans() {
                                                             disabled={submitting}
                                                             className="p-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-600 rounded-lg transition-colors"
                                                             title="Approve & Disburse"
+                                                            aria-label="Approve and disburse loan"
                                                         >
-                                                            <CheckCircle2 className="w-4 h-4" />
+                                                            <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
                                                         </button>
                                                         <button
                                                             onClick={() => handleLoanAction(loan.id, 'rejected')}
                                                             disabled={submitting}
                                                             className="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg transition-colors"
                                                             title="Reject Application"
+                                                            aria-label="Reject loan request"
                                                         >
-                                                            <XCircle className="w-4 h-4" />
+                                                            <XCircle className="w-4 h-4" aria-hidden="true" />
                                                         </button>
                                                     </div>
                                                 )}
@@ -354,6 +316,15 @@ export default function Loans() {
                         </table>
                     )}
                 </div>
+
+                {filteredLoans.length > 0 && (
+                    <div className="flex items-center justify-between px-6 py-4 bg-white border-t border-gray-200">
+                        <div className="text-sm text-gray-500 font-medium">
+                            Showing <span className="font-medium">{page * 50 + 1}</span> to <span className="font-medium">{Math.min((page + 1) * 50, count)}</span> of <span className="font-medium">{count}</span> results
+                        </div>
+                        <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
+                    </div>
+                )}
             </div>
 
             {/* Apply Loan Modal */}
@@ -371,15 +342,15 @@ export default function Loans() {
                         </div>
                         <form onSubmit={handleCreateLoan} className="p-6 space-y-4">
                             <div>
-                                <label className="block text-xs font-bold text-gray-700 mb-1.5">Select Employee*</label>
-                                <select
+                                <label htmlFor="auto-id-loans-50" className="block text-xs font-bold text-gray-700 mb-1.5">Select Employee*</label>
+                                <select id="auto-id-loans-50"
                                     required
                                     value={loanForm.employee_id}
                                     onChange={(e) => setLoanForm(prev => ({ ...prev, employee_id: e.target.value }))}
                                     className="w-full text-xs border border-gray-200 rounded-xl bg-gray-50 p-3"
                                 >
                                     <option value="">Select Employee</option>
-                                    {employees.map(emp => (
+                                    {activeEmployees.map(emp => (
                                         <option key={emp.id} value={emp.id}>
                                             {emp.first_name} {emp.last_name} ({emp.employee_id})
                                         </option>
@@ -389,8 +360,8 @@ export default function Loans() {
 
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
-                                    <label className="block text-xs font-bold text-gray-700 mb-1.5">Loan Type</label>
-                                    <select
+                                    <label htmlFor="auto-id-loans-51" className="block text-xs font-bold text-gray-700 mb-1.5">Loan Type</label>
+                                    <select id="auto-id-loans-51"
                                         value={loanForm.loan_type}
                                         onChange={(e) => setLoanForm(prev => ({ ...prev, loan_type: e.target.value }))}
                                         className="w-full text-xs border border-gray-200 rounded-xl bg-gray-50 p-2.5"
@@ -401,8 +372,8 @@ export default function Loans() {
                                     </select>
                                 </div>
                                 <div>
-                                    <label className="block text-xs font-bold text-gray-700 mb-1.5">Tenure (Months)</label>
-                                    <select
+                                    <label htmlFor="auto-id-loans-52" className="block text-xs font-bold text-gray-700 mb-1.5">Tenure (Months)</label>
+                                    <select id="auto-id-loans-52"
                                         value={loanForm.tenure_months}
                                         onChange={(e) => setLoanForm(prev => ({ ...prev, tenure_months: Number(e.target.value) }))}
                                         className="w-full text-xs border border-gray-200 rounded-xl bg-gray-50 p-2.5 font-bold"
@@ -415,8 +386,8 @@ export default function Loans() {
                             </div>
 
                             <div>
-                                <label className="block text-xs font-bold text-gray-700 mb-1.5">Principal Amount (₹)*</label>
-                                <input
+                                <label htmlFor="auto-id-loans-53" className="block text-xs font-bold text-gray-700 mb-1.5">Principal Amount (₹)*</label>
+                                <input id="auto-id-loans-53"
                                     type="number"
                                     required
                                     min="1"

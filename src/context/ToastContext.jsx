@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useContext, useState, useCallback } from 'react'
+import { createContext, useContext, useState, useCallback, useEffect } from 'react'
 
 const ToastContext = createContext(null)
 
@@ -26,6 +26,23 @@ export const ToastProvider = ({ children }) => {
         }
         return id
     }, [removeToast])
+
+    useEffect(() => {
+        const handleOnline = () => {
+            addToast('Network connection restored. Back online!', 'success', 4000)
+        }
+        const handleOffline = () => {
+            addToast('Network connection lost. The app will attempt to retry requests in the background.', 'warning', 6000)
+        }
+
+        window.addEventListener('online', handleOnline)
+        window.addEventListener('offline', handleOffline)
+
+        return () => {
+            window.removeEventListener('online', handleOnline)
+            window.removeEventListener('offline', handleOffline)
+        }
+    }, [addToast])
 
     const toast = {
         success: (msg, duration) => addToast(msg, 'success', duration),
@@ -135,7 +152,7 @@ function ToastItem({ toast, onRemove }) {
             {/* Close */}
             <button
                 onClick={() => onRemove(toast.id)}
-                className="shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+                className="shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-gray-600 hover:text-gray-600 hover:bg-gray-100 transition-colors"
                 aria-label="Dismiss notification"
             >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="w-3.5 h-3.5">

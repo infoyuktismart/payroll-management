@@ -1,9 +1,12 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
+import { FunctionsHttpError } from '@supabase/supabase-js'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
-import { Search, User, Edit2, DollarSign, Calculator, X, Plus, Trash2, Info, Calendar, Save } from 'lucide-react'
+import { Search, User, Edit2, DollarSign, Calculator, X, Plus, Trash2, Info, Calendar, Save, AlertTriangle } from 'lucide-react'
 import { CardSkeleton } from '../components/ui/SkeletonLoader'
+import { applyCompanyFilter, withCompanyScope, getActiveCompanyId } from '../services/tenantScope'
+import EmployeeSalaryCard from '../components/EmployeeSalaryCard'
 
 // --- Deductions Helper Components & Modals ---
 
@@ -81,7 +84,6 @@ const AddCustomDeductionModal = ({ isOpen, onClose, employees = [], onDeductionA
             onDeductionAdded(initialData ? 'updated' : 'added')
             onClose()
         } catch (err) {
-            // toast injected from parent via window event — see AddCustomDeductionModal usage
             console.error('Error saving custom deduction:', err.message)
             const event = new CustomEvent('salary-structure-toast-error', { detail: err.message })
             window.dispatchEvent(event)
@@ -259,56 +261,108 @@ export default function SalaryStructure() {
     const [effectiveDate, setEffectiveDate] = useState('')
     const [structure, setStructure] = useState({})
     const [calculated, setCalculated] = useState({ gross: 0, totalDeductions: 0, net: 0, components: {} })
+    const [showEsiWarningModal, setShowEsiWarningModal] = useState(false)
+    const [deleteConfirmation, setDeleteConfirmation] = useState({
+        isOpen: false,
+        title: '',
+        message: '',
+        onConfirm: null
+    })
 
-    // Fetch all initial structural data in parallel on mount to avoid waterfalls and tab switching latency
-    useEffect(() => {
-        const loadInitialData = async () => {
-            setLoading(true)
-            try {
-                // Fetch employees, components, and deductions in parallel
-                await Promise.all([
-                    fetchEmployees(),
-                    fetchComponents(),
-                    fetchDeductionsData()
-                ])
-            } catch (error) {
-                console.error('Error loading initial data:', error)
-            } finally {
-                setLoading(false)
-            }
-        }
-        loadInitialData()
+    // Bulk Revision State
+    const [isImpactModalOpen, setIsImpactModalOpen] = useState(false)
+    const [bulkRevisionLoading, setBulkRevisionLoading] = useState(false)
+    const [pendingComponentData, setPendingComponentData] = useState(null)
+
+    const resetComponentForm = useCallback(() => {
+        setNewComponent({
+            label: '',
+            code: '',
+            system_type: '',
+            type: 'fixed',
+            category: 'earning',
+            value: '',
+            min_limit: '',
+            max_limit: '',
+            taxable: false,
+            is_statutory: false,
+            status: 'Active'
+        })
+        setEditingComponentKey(null)
     }, [])
 
-    useEffect(() => {
-        if (isEditModalOpen) {
-            calculateTotals()
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [basicSalary, structure, isEditModalOpen])
-
-    const fetchDeductionsData = async () => {
+    const fetchDeductionsData = useCallback(async () => {
         try {
             // Fetch Custom Deductions
-            const { data: customData } = await supabase.from('custom_deductions')
-                .select(`
-                    id, employee_id, deduction_type, amount, reason, start_date, end_date, is_recurring, status,
-                    employee:employees(first_name, last_name, employee_id)
-                `)
+            const { data: customData } = await applyCompanyFilter(
+                supabase.from('custom_deductions')
+                    .select(`
+                        id, employee_id, deduction_type, amount, reason, start_date, end_date, is_recurring, status,
+                        employee:employees(first_name, last_name, employee_id)
+                    `)
+            )
             if (customData) setCustomDeductions(customData)
         } catch (error) {
             console.error('Error fetching deductions:', error)
         }
-    }
+    }, [])
 
-    const fetchComponents = async () => {
+    const fetchComponents = useCallback(async () => {
         try {
-            const { data, error } = await supabase
-                .from('salary_components')
-                .select('*')
-                .order('created_at', { ascending: true })
+            let { data, error } = await applyCompanyFilter(
+                supabase
+                    .from('salary_components')
+                    .select('*')
+            ).order('created_at', { ascending: true })
 
             if (error) throw error
+
+            const companyId = getActiveCompanyId()
+            if (data && data.length > 0) {
+                // Auto-update Basic Salary component to percentage-based if it's currently fixed or 0 in DB
+                const basicComp = data.find(comp => comp.code === 'BASIC')
+                if (basicComp && (basicComp.calculation_type === 'fixed' || parseFloat(basicComp.value) === 0)) {
+                    const { error: updateError } = await supabase
+                        .from('salary_components')
+                        .update({ calculation_type: 'percentage', value: 50 })
+                        .eq('id', basicComp.id)
+                    if (!updateError) {
+                        const { data: updatedData, error: refetchError } = await applyCompanyFilter(
+                            supabase
+                                .from('salary_components')
+                                .select('*')
+                        ).order('created_at', { ascending: true })
+                        if (!refetchError && updatedData) {
+                            data = updatedData
+                        }
+                    }
+                }
+            }
+
+            if (data && data.length === 0 && companyId) {
+                const defaultComponents = [
+                    { name: 'Basic Salary', code: 'BASIC', system_type: '', type: 'earning', calculation_type: 'percentage', value: 50, min_limit: 0, max_limit: 0, is_taxable: true, is_statutory: false, status: 'Active' },
+                    { name: 'House Rent Allowance (HRA)', code: 'HRA', system_type: '', type: 'earning', calculation_type: 'percentage', value: 40, min_limit: 0, max_limit: 0, is_taxable: true, is_statutory: false, status: 'Active' },
+                    { name: 'Dearness Allowance (DA)', code: 'DA', system_type: '', type: 'earning', calculation_type: 'percentage', value: 10, min_limit: 0, max_limit: 0, is_taxable: true, is_statutory: false, status: 'Active' },
+                    { name: 'Medical Allowance', code: 'MED', system_type: '', type: 'earning', calculation_type: 'fixed', value: 1250, min_limit: 0, max_limit: 0, is_taxable: false, is_statutory: false, status: 'Active' },
+                    { name: 'Conveyance Allowance', code: 'CONV', system_type: '', type: 'earning', calculation_type: 'fixed', value: 800, min_limit: 0, max_limit: 0, is_taxable: false, is_statutory: false, status: 'Active' },
+                    { name: 'Special Allowance', code: 'SA', system_type: '', type: 'earning', calculation_type: 'fixed', value: 5000, min_limit: 0, max_limit: 0, is_taxable: true, is_statutory: false, status: 'Active' },
+                    { name: 'Provident Fund', code: 'PF', system_type: 'PF', type: 'deduction', calculation_type: 'percentage', value: 12, min_limit: 0, max_limit: 15000, is_taxable: false, is_statutory: true, status: 'Active' },
+                    { name: 'ESI', code: 'ESI', system_type: 'ESI', type: 'deduction', calculation_type: 'percentage', value: 0.75, min_limit: 0, max_limit: 0, is_taxable: false, is_statutory: true, status: 'Active' },
+                    { name: 'Professional Tax', code: 'PT', system_type: 'PT', type: 'deduction', calculation_type: 'fixed', value: 200, min_limit: 0, max_limit: 0, is_taxable: false, is_statutory: true, status: 'Active' }
+                ].map(comp => withCompanyScope(comp, companyId))
+
+                const { data: insertedData, error: insertError } = await supabase
+                    .from('salary_components')
+                    .insert(defaultComponents)
+                    .select()
+
+                if (insertError) {
+                    console.error('Error seeding default components:', insertError)
+                } else if (insertedData) {
+                    data = insertedData
+                }
+            }
 
             const componentsObj = {}
             data.forEach(comp => {
@@ -333,14 +387,16 @@ export default function SalaryStructure() {
         } catch (error) {
             console.error('Error fetching salary components:', error)
         }
-    }
+    }, [])
 
-    const fetchEmployees = async () => {
+    const fetchEmployees = useCallback(async () => {
         setLoading(true)
         try {
-            const { data, error } = await supabase
-                .from('employees')
-                .select('*')
+            const { data, error } = await applyCompanyFilter(
+                supabase
+                    .from('employees')
+                    .select('*')
+            )
                 .neq('status', 'terminated')
                 .order('first_name')
 
@@ -351,54 +407,40 @@ export default function SalaryStructure() {
         } finally {
             setLoading(false)
         }
-    }
+    }, [])
 
-    const handleEditClick = (employee) => {
-        setEditingEmployee(employee)
-        setBasicSalary(parseFloat(employee.salary) || 0)
-        setEffectiveDate(employee.salary_effective_date || new Date().toISOString().split('T')[0])
-
-        const existingStructure = employee.salary_structure || {}
-        const mergedStructure = {}
-
-        Object.keys(salaryComponents).forEach(key => {
-            const globalDef = salaryComponents[key]
-
-            if (existingStructure[key]) {
-                mergedStructure[key] = {
-                    ...globalDef,
-                    enabled: existingStructure[key].enabled,
-                    value: existingStructure[key].value,
-                }
-            } else {
-                mergedStructure[key] = { ...globalDef }
+    // Fetch all initial structural data in parallel on mount to avoid waterfalls and tab switching latency
+    useEffect(() => {
+        const loadInitialData = async () => {
+            setLoading(true)
+            try {
+                // Fetch employees, components, and deductions in parallel
+                await Promise.all([
+                    fetchEmployees(),
+                    fetchComponents(),
+                    fetchDeductionsData()
+                ])
+            } catch (error) {
+                console.error('Error loading initial data:', error)
+            } finally {
+                setLoading(false)
             }
-        })
+        }
+        loadInitialData()
+    }, [fetchEmployees, fetchComponents, fetchDeductionsData])
 
-        setStructure(mergedStructure)
-        setIsEditModalOpen(true)
-    }
-
-    const toggleComponent = (key) => {
-        setStructure(prev => ({
-            ...prev,
-            [key]: { ...prev[key], enabled: !prev[key].enabled }
-        }))
-    }
-
-    const updateComponentValue = (key, newValue) => {
-        setStructure(prev => ({
-            ...prev,
-            [key]: { ...prev[key], value: parseFloat(newValue) || 0, type: 'fixed' }
-        }))
-    }
-
-    const calculateTotals = () => {
+    const calculateTotals = useCallback(() => {
         let totalAllowances = 0
         let totalDeductions = 0
         let componentValues = {}
 
         Object.entries(structure).forEach(([key, config]) => {
+            const isBasic = config.label?.toLowerCase() === 'basic' || 
+                            config.label?.toLowerCase() === 'basic salary' || 
+                            config.code?.toLowerCase() === 'basic' || 
+                            key.toLowerCase() === 'basic_salary';
+            if (isBasic) return;
+
             if (config.category === 'earning' && config.enabled) {
                 let amount = 0
                 if (config.type === 'percentage') {
@@ -454,9 +496,55 @@ export default function SalaryStructure() {
             net: grossSalary - totalDeductions,
             components: componentValues
         })
-    }
+    }, [basicSalary, structure, editingEmployee])
 
-    const handleSave = async () => {
+    useEffect(() => {
+        if (isEditModalOpen) {
+            calculateTotals()
+        }
+    }, [calculateTotals, isEditModalOpen])
+
+    const handleEditClick = useCallback((employee) => {
+        setEditingEmployee(employee)
+        setBasicSalary((parseFloat(employee.salary) || 0) * 0.5)
+        setEffectiveDate(employee.salary_effective_date || new Date().toISOString().split('T')[0])
+
+        const existingStructure = employee.salary_structure || {}
+        const mergedStructure = {}
+
+        Object.keys(salaryComponents).forEach(key => {
+            const globalDef = salaryComponents[key]
+
+            if (existingStructure[key]) {
+                mergedStructure[key] = {
+                    ...globalDef,
+                    enabled: existingStructure[key].enabled,
+                    value: existingStructure[key].value,
+                }
+            } else {
+                mergedStructure[key] = { ...globalDef }
+            }
+        })
+
+        setStructure(mergedStructure)
+        setIsEditModalOpen(true)
+    }, [salaryComponents])
+
+    const toggleComponent = useCallback((key) => {
+        setStructure(prev => ({
+            ...prev,
+            [key]: { ...prev[key], enabled: !prev[key].enabled }
+        }))
+    }, [])
+
+    const updateComponentValue = useCallback((key, newValue) => {
+        setStructure(prev => ({
+            ...prev,
+            [key]: { ...prev[key], value: parseFloat(newValue) || 0, type: 'fixed' }
+        }))
+    }, [])
+
+    const handleSave = useCallback(async (forceSave = false) => {
         try {
             // ESI Eligibility Validation
             const esiComponents = Object.entries(structure).filter(([key, config]) =>
@@ -467,37 +555,18 @@ export default function SalaryStructure() {
                 )
             )
 
-            if (esiComponents.length > 0) {
+            if (esiComponents.length > 0 && !forceSave) {
                 // ESI salary limit: ₹21,000 for regular employees, ₹25,000 for specially abled
                 const esiLimit = editingEmployee?.is_specially_abled ? 25000 : 21000
 
                 if (calculated.gross > esiLimit) {
-                    const proceed = window.confirm(
-                        `⚠️ ESI Eligibility Warning\n\n` +
-                        `Employee's gross salary (₹${calculated.gross.toLocaleString()}) exceeds the ESI limit of ₹${esiLimit.toLocaleString()}.\n\n` +
-                        `According to ESIC regulations:\n` +
-                        `• Regular employees: ₹21,000 limit\n` +
-                        `• Specially abled employees: ₹25,000 limit\n\n` +
-                        `This employee is NOT eligible for ESI deduction.\n\n` +
-                        `Do you want to disable ESI and continue saving?`
-                    )
-
-                    if (!proceed) {
-                        return // User cancelled
-                    }
-
-                    // Disable ESI components
-                    esiComponents.forEach(([key]) => {
-                        structure[key].enabled = false
-                    })
-
-                    // Recalculate without ESI
-                    calculateTotals()
+                    setShowEsiWarningModal(true)
+                    return // Pause saving, wait for custom modal action
                 }
             }
 
             const updates = {
-                salary: basicSalary,
+                salary: basicSalary * 2,
                 salary_allowances: calculated.gross - basicSalary,
                 salary_deductions: calculated.totalDeductions,
                 salary_effective_date: effectiveDate,
@@ -524,9 +593,113 @@ export default function SalaryStructure() {
             console.error('Update Error:', error)
             toast.error('Error updating salary structure: ' + error.message)
         }
-    }
+    }, [structure, basicSalary, calculated, effectiveDate, editingEmployee, toast, fetchEmployees])
 
-    const handleAddComponent = async () => {
+    const confirmSaveWithoutEsi = useCallback(() => {
+        const esiComponents = Object.entries(structure).filter(([key, config]) =>
+            config.enabled && (
+                config.label?.toLowerCase().includes('esi') ||
+                key.toLowerCase().includes('esi') ||
+                config.label?.toLowerCase().includes('employee state insurance')
+            )
+        )
+        
+        esiComponents.forEach(([key]) => {
+            structure[key].enabled = false
+        })
+
+        calculateTotals()
+        setShowEsiWarningModal(false)
+        handleSave(true)
+    }, [structure, calculateTotals, handleSave])
+
+    const autoBalanceSpecialAllowance = useCallback(() => {
+        const targetCTC = basicSalary * 2
+
+        const specialAllowanceKey = Object.keys(structure).find(key => 
+            structure[key].label?.toLowerCase().includes('special allowance')
+        )
+
+        if (!specialAllowanceKey) {
+            toast.error('Special Allowance component not found in the current structure.')
+            return
+        }
+
+        const tempStructure = { ...structure }
+        tempStructure[specialAllowanceKey] = {
+            ...tempStructure[specialAllowanceKey],
+            value: 0,
+            enabled: true
+        }
+
+        let totalAllowances = 0
+        Object.entries(tempStructure).forEach(([key, config]) => {
+            const isBasic = config.label?.toLowerCase() === 'basic' || 
+                            config.label?.toLowerCase() === 'basic salary' || 
+                            config.code?.toLowerCase() === 'basic' || 
+                            key.toLowerCase() === 'basic_salary';
+            if (isBasic) return;
+
+            if (config.category === 'earning' && config.enabled) {
+                const amount = config.type === 'percentage' 
+                    ? (basicSalary * config.value) / 100 
+                    : (config.value || 0)
+                totalAllowances += amount
+            }
+        })
+
+        const grossSalaryWithoutSA = basicSalary + totalAllowances
+
+        const epfWageBase = Math.min(basicSalary, 15000)
+        const employerPF = (epfWageBase * 12) / 100
+
+        const state = editingEmployee?.state || ''
+        const getEmployerLWF = (stateName) => {
+            switch (stateName) {
+                case 'Maharashtra': return 12
+                case 'Karnataka': return 40
+                case 'Gujarat': return 12
+                case 'Tamil Nadu': return 20
+                case 'Andhra Pradesh': return 70
+                case 'Telangana': return 70
+                case 'Madhya Pradesh': return 20
+                case 'Punjab': return 20
+                case 'Kerala': return 8
+                case 'Haryana': return 6
+                case 'West Bengal': return 6
+                case 'Odisha': return 6
+                case 'Chhattisgarh': return 20
+                case 'Jharkhand': return 20
+                case 'Goa': return 20
+                default: return 0
+            }
+        }
+        const employerLWF = getEmployerLWF(state)
+
+        const corporateAddonsWithoutESI = employerPF
+        const esiLimit = editingEmployee?.is_specially_abled ? 25000 : 21000
+
+        let targetGross = targetCTC - corporateAddonsWithoutESI
+
+        if (targetGross <= esiLimit) {
+            targetGross = (targetCTC - corporateAddonsWithoutESI) / 1.0325
+        }
+
+        const specialAllowance = Math.round(targetGross - grossSalaryWithoutSA)
+
+        setStructure(prev => ({
+            ...prev,
+            [specialAllowanceKey]: {
+                ...prev[specialAllowanceKey],
+                value: Math.max(0, specialAllowance),
+                enabled: true
+            }
+        }))
+
+        toast.success(`Salary balanced! Computed Special Allowance: ₹${Math.max(0, specialAllowance).toLocaleString('en-IN')}`)
+    }, [basicSalary, structure, editingEmployee, toast])
+
+    const handleAddComponent = useCallback(async (forcedSave = false) => {
         try {
             const componentData = {
                 name: newComponent.label,
@@ -540,6 +713,17 @@ export default function SalaryStructure() {
                 is_taxable: newComponent.taxable,
                 is_statutory: newComponent.is_statutory,
                 status: newComponent.status
+            }
+
+            // Check if this is an edit of value, and if we should intercept for bulk revision modal
+            if (editingComponentKey && !forcedSave) {
+                const originalComponent = salaryComponents[editingComponentKey]
+                const valueHasChanged = originalComponent && parseFloat(originalComponent.value) !== parseFloat(newComponent.value);
+                if (valueHasChanged) {
+                    setPendingComponentData(componentData)
+                    setIsImpactModalOpen(true)
+                    return // Open the impact modal
+                }
             }
 
             let error = null
@@ -560,6 +744,8 @@ export default function SalaryStructure() {
 
             if (error) throw error
             toast.success(editingComponentKey ? 'Component updated!' : 'Component added!')
+            setIsImpactModalOpen(false)
+            setPendingComponentData(null)
             setIsAddComponentModalOpen(false)
             resetComponentForm()
             fetchComponents()
@@ -567,9 +753,83 @@ export default function SalaryStructure() {
             console.error('Error saving component:', error)
             toast.error('Error saving component: ' + error.message)
         }
-    }
+    }, [newComponent, editingComponentKey, salaryComponents, fetchComponents, resetComponentForm, toast])
 
-    const handleEditComponent = (key) => {
+    const handleBulkSalaryRevision = useCallback(async () => {
+        if (!pendingComponentData || !editingComponentKey) return
+        setBulkRevisionLoading(true)
+        try {
+            // 1. First, save the global component to the database (equivalent to Save for New Hires Only)
+            const id = salaryComponents[editingComponentKey].id
+            const { error: updateError } = await supabase
+                .from('salary_components')
+                .update(pendingComponentData)
+                .eq('id', id)
+
+            if (updateError) throw updateError
+
+            // 2. Call the bulk salary revision Supabase Edge Function to update active employee structures
+            const activeCompanyId = getActiveCompanyId()
+            const { data, error: functionError } = await supabase.functions.invoke('bulk-salary-revision', {
+                body: {
+                    componentName: pendingComponentData.name,
+                    componentCode: pendingComponentData.code,
+                    newValue: pendingComponentData.value,
+                    companyId: activeCompanyId
+                }
+            })
+
+            if (functionError) {
+                // Supabase wraps the real error. Let's dig it out.
+                console.error("1. Full Error Object:", functionError);
+                console.error("2. Error Name:", functionError.name);
+                
+                let errorMessage = functionError.message;
+                
+                // If the edge function sent back a JSON response with our actual error message, it lives here:
+                if (functionError instanceof FunctionsHttpError || functionError.name === 'FunctionsHttpError' || (functionError.context && typeof functionError.context.json === 'function')) {
+                    const rawError = await functionError.context.json().catch(() => null);
+                    console.error("3. The REAL Backend Error:", rawError || "Could not parse backend error");
+                    if (rawError && rawError.error) {
+                        errorMessage = rawError.error;
+                    }
+                }
+                
+                throw new Error(errorMessage);
+            }
+
+            if (data?.success) {
+                const updated = data.updatedCount || 0
+                const skipped = data.skippedCount || 0
+                const warningList = data.warnings || []
+                
+                toast.success(`Salaries revised successfully! Updated: ${updated} employee(s).`)
+
+                if (warningList.length > 0) {
+                    // Display details of skipped employees in a friendly warning toast or log
+                    const warningNames = warningList.map(w => `${w.name} (${w.reason})`).join(', ')
+                    toast.warning(`Skipped ${warningList.length} employee(s) due to flat adjustments constraint: ${warningNames}`, { duration: 8000 })
+                }
+            } else {
+                throw new Error(data?.error || 'Bulk revision sync response was unsuccessful.')
+            }
+
+            // Close all modals and refresh data
+            setIsImpactModalOpen(false)
+            setPendingComponentData(null)
+            setIsAddComponentModalOpen(false)
+            resetComponentForm()
+            fetchComponents()
+            fetchEmployees() // Refresh employees list to show their revised salaries!
+        } catch (error) {
+            console.error('Bulk Revision Error:', error)
+            toast.error('Bulk revision failed: ' + error.message)
+        } finally {
+            setBulkRevisionLoading(false)
+        }
+    }, [pendingComponentData, editingComponentKey, salaryComponents, fetchComponents, fetchEmployees, resetComponentForm, toast])
+
+    const handleEditComponent = useCallback((key) => {
         const component = salaryComponents[key]
         setNewComponent({
             label: component.label,
@@ -586,11 +846,9 @@ export default function SalaryStructure() {
         })
         setEditingComponentKey(key)
         setIsAddComponentModalOpen(true)
-    }
+    }, [salaryComponents])
 
-    const handleDeleteComponent = async (key) => {
-        if (!window.confirm('Are you sure you want to delete this component?')) return
-
+    const performDeleteComponent = useCallback(async (key) => {
         const id = salaryComponents[key].id
         try {
             const { error } = await supabase.from('salary_components').delete().eq('id', id)
@@ -600,33 +858,27 @@ export default function SalaryStructure() {
         } catch (error) {
             console.error('Error deleting component:', error)
             toast.error('Error deleting component: ' + error.message)
+        } finally {
+            setDeleteConfirmation(prev => ({ ...prev, isOpen: false }))
         }
-    }
+    }, [salaryComponents, fetchComponents, toast])
 
-    const resetComponentForm = () => {
-        setNewComponent({
-            label: '',
-            code: '',
-            system_type: '',
-            type: 'fixed',
-            category: 'earning',
-            value: '',
-            min_limit: '',
-            max_limit: '',
-            taxable: false,
-            is_statutory: false,
-            status: 'Active'
+    const handleDeleteComponent = useCallback((key) => {
+        setDeleteConfirmation({
+            isOpen: true,
+            title: 'Delete Component',
+            message: `Are you sure you want to delete the "${salaryComponents[key].label}" component? This will permanently remove it from the available salary components list.`,
+            onConfirm: () => performDeleteComponent(key)
         })
-        setEditingComponentKey(null)
-    }
+    }, [salaryComponents, performDeleteComponent])
 
-    const handleEditCustomDeduction = (deduction) => {
+
+    const handleEditCustomDeduction = useCallback((deduction) => {
         setEditingCustomDeduction(deduction)
         setIsAddCustomOpen(true)
-    }
+    }, [])
 
-    const handleDeleteCustomDeduction = async (id) => {
-        if (!window.confirm('Are you sure you want to delete this custom deduction?')) return
+    const performDeleteCustomDeduction = useCallback(async (id) => {
         try {
             const { error } = await supabase.from('custom_deductions').delete().eq('id', id)
             if (error) throw error
@@ -635,13 +887,30 @@ export default function SalaryStructure() {
         } catch (error) {
             console.error('Error deleting custom deduction:', error)
             toast.error('Error deleting custom deduction: ' + error.message)
+        } finally {
+            setDeleteConfirmation(prev => ({ ...prev, isOpen: false }))
         }
-    }
+    }, [fetchDeductionsData, toast])
 
-    const filteredEmployees = employees.filter(emp =>
-        `${emp.first_name} ${emp.last_name}`.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        emp.employee_id?.toLowerCase().includes(searchTerm.toLowerCase())
-    )
+    const handleDeleteCustomDeduction = useCallback((id) => {
+        const targetDeduction = customDeductions.find(d => d.id === id)
+        const empName = targetDeduction ? `${targetDeduction.employee?.first_name} ${targetDeduction.employee?.last_name}` : ''
+        const typeLabel = targetDeduction?.deduction_type || 'deduction'
+        
+        setDeleteConfirmation({
+            isOpen: true,
+            title: 'Delete Custom Deduction',
+            message: `Are you sure you want to delete the ${typeLabel} of ₹${targetDeduction?.amount?.toLocaleString('en-IN')} for ${empName}? This action is permanent.`,
+            onConfirm: () => performDeleteCustomDeduction(id)
+        })
+    }, [customDeductions, performDeleteCustomDeduction])
+
+    const filteredEmployees = useMemo(() => {
+        return employees.filter(emp =>
+            `${emp.first_name} ${emp.last_name}`.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            emp.employee_id?.toLowerCase().includes(searchTerm.toLowerCase())
+        )
+    }, [employees, searchTerm])
 
     return (
         <div className="space-y-6">
@@ -693,134 +962,16 @@ export default function SalaryStructure() {
                             <CardSkeleton />
                         </div>
                     ) : filteredEmployees.length > 0 ? (
-                        filteredEmployees.map((emp, index) => {
-                            const basic = parseFloat(emp.salary) || 0
-                            const structure = emp.salary_structure || {}
-
-                            // Diverse color palette
-                            const colors = [
-                                { border: 'border-l-indigo-600', text: 'text-indigo-600', bg: 'bg-indigo-50', hover: 'group-hover:text-indigo-900' },
-                                { border: 'border-l-emerald-600', text: 'text-emerald-600', bg: 'bg-emerald-50', hover: 'group-hover:text-emerald-900' },
-                                { border: 'border-l-blue-600', text: 'text-blue-600', bg: 'bg-blue-50', hover: 'group-hover:text-blue-900' },
-                                { border: 'border-l-violet-600', text: 'text-violet-600', bg: 'bg-violet-50', hover: 'group-hover:text-violet-900' },
-                                { border: 'border-l-amber-600', text: 'text-amber-600', bg: 'bg-amber-50', hover: 'group-hover:text-amber-900' },
-                                { border: 'border-l-rose-600', text: 'text-rose-600', bg: 'bg-rose-50', hover: 'group-hover:text-rose-900' },
-                                { border: 'border-l-cyan-600', text: 'text-cyan-600', bg: 'bg-cyan-50', hover: 'group-hover:text-cyan-900' },
-                                { border: 'border-l-teal-600', text: 'text-teal-600', bg: 'bg-teal-50', hover: 'group-hover:text-teal-900' },
-                            ]
-                            const colorScheme = colors[index % colors.length]
-
-                            // Calculate Dynamic Allowances
-                            let totalAllowances = 0
-                            Object.values(structure).forEach(config => {
-                                if (config.category === 'earning' && config.enabled) {
-                                    totalAllowances += config.type === 'percentage' ? (basic * config.value) / 100 : (config.value || 0)
-                                }
-                            })
-
-                            const gross = basic + totalAllowances
-
-                            // Calculate Dynamic Deductions
-                            let deductions = 0
-                            Object.values(structure).forEach(config => {
-                                if (config.category === 'deduction' && config.enabled) {
-                                    // ESI Eligibility check
-                                    if (config.system_type === 'ESI') {
-                                        const esiLimit = emp.is_specially_abled ? 25000 : 21000
-                                        if (gross > esiLimit) return
-                                    }
-
-                                    if (config.type === 'percentage') {
-                                        const label = config.label?.toLowerCase() || ''
-                                        const isBasicTarget = config.system_type === 'PF' ||
-                                            config.system_type === 'ESI' ||
-                                            label.includes('pf') ||
-                                            label.includes('provident fund') ||
-                                            label.includes('esi')
-
-                                        const base = isBasicTarget ? basic : gross
-                                        let effectiveBase = base
-                                        if (config.max_limit > 0) effectiveBase = Math.min(effectiveBase, config.max_limit);
-                                        if (config.min_limit > 0) effectiveBase = Math.max(effectiveBase, config.min_limit);
-                                        deductions += (effectiveBase * config.value) / 100
-                                    } else {
-                                        deductions += (config.value || 0)
-                                    }
-                                }
-                            })
-
-                            const net = gross - deductions
-                            const hasStructure = Object.keys(structure).length > 0
-
-                            if (!hasStructure) {
-                                return (
-                                    <div key={emp.id} className={`bg-white rounded-2xl p-6 shadow-sm border border-gray-100 border-l-[6px] ${colorScheme.border} flex flex-col md:flex-row md:items-center justify-between gap-6 transition-all duration-300 hover:scale-[1.01] hover:shadow-md group`}>
-                                        <div className="flex items-start space-x-4">
-                                            <div className={`w-12 h-12 rounded-full ${colorScheme.bg} flex items-center justify-center ${colorScheme.text} font-bold text-lg shrink-0 group-hover:scale-110 transition-transform`}>{emp.first_name[0]}{emp.last_name[0]}</div>
-                                            <div>
-                                                <h3 className={`text-lg font-bold text-gray-900 ${colorScheme.hover} transition-colors`}>{emp.first_name} {emp.last_name}</h3>
-                                                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">{emp.designation || 'No Designation'} • {emp.department || 'No Dept'}</p>
-                                                <p className={`text-[10px] ${colorScheme.text} font-bold mt-1 uppercase tracking-widest`}>{emp.employee_id || 'ID-Pending'}</p>
-                                            </div>
-                                        </div>
-                                        <div className="flex flex-col md:flex-row md:items-center justify-end gap-6 text-right">
-                                            <div className="text-gray-400 text-xs font-bold uppercase tracking-widest italic">No salary structure configured</div>
-                                            {isAdmin && (
-                                                <button onClick={() => handleEditClick(emp)} className="px-6 py-2.5 bg-slate-900 text-white font-bold text-xs uppercase tracking-widest rounded-xl hover:bg-slate-800 shadow-lg shadow-slate-100 transition-all active:scale-95">Configure Salary</button>
-                                            )}
-                                        </div>
-                                    </div>
-                                )
-                            }
-                            return (
-                                <div key={emp.id} className={`bg-white rounded-2xl p-6 shadow-sm border border-gray-100 border-l-[6px] ${colorScheme.border} transition-all duration-300 hover:scale-[1.01] hover:shadow-md group`}>
-                                    <div className="flex flex-col md:flex-row justify-between items-start mb-6">
-                                        <div className="flex items-start space-x-4">
-                                            <div className={`w-12 h-12 rounded-full ${colorScheme.bg} flex items-center justify-center ${colorScheme.text} font-bold text-lg shrink-0 group-hover:scale-110 transition-transform shadow-inner`}>{emp.first_name[0]}{emp.last_name[0]}</div>
-                                            <div>
-                                                <h3 className={`text-lg font-bold text-gray-900 ${colorScheme.hover} transition-colors`}>{emp.first_name} {emp.last_name}</h3>
-                                                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">{emp.designation || 'No Designation'} • {emp.department || 'No Dept'}</p>
-                                                <p className="text-[10px] text-gray-400 font-bold mt-1 uppercase tracking-widest">Employee ID: {emp.employee_id || 'ID-Pending'}</p>
-                                            </div>
-                                        </div>
-                                        <div className="text-right mt-4 md:mt-0">
-                                            <p className="text-3xl font-bold text-slate-900 group-hover:scale-105 transition-transform origin-right">{formatCurrency(gross)}</p>
-                                            <p className="text-[10px] text-gray-400 uppercase font-bold tracking-widest mt-1">Gross Salary</p>
-                                            <p className="text-sm font-bold text-emerald-600 mt-2 flex items-center justify-end">
-                                                <span className="text-[10px] uppercase tracking-widest mr-2 opacity-60">Net:</span>
-                                                {formatCurrency(net)}
-                                            </p>
-                                        </div>
-                                    </div>
-                                    <div className="flex flex-col md:flex-row items-end justify-between gap-6 pt-6 border-t border-gray-50/50">
-                                        <div className="flex-1 grid grid-cols-2 lg:grid-cols-3 gap-8 w-full">
-                                            <div>
-                                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mb-1.5 flex items-center">
-                                                    <span className={`w-1.5 h-1.5 rounded-full ${colorScheme.text.replace('-600', '-500')} mr-2`}></span>
-                                                    Basic Salary
-                                                </p>
-                                                <p className="text-xl font-bold text-slate-900">{formatCurrency(basic)}</p>
-                                            </div>
-                                            <div>
-                                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mb-1.5 flex items-center">
-                                                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500 mr-2"></span>
-                                                    Total Deductions
-                                                </p>
-                                                <p className="text-xl font-bold text-rose-600">{formatCurrency(deductions)}</p>
-                                            </div>
-                                            <div>
-                                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mb-1.5 flex items-center">
-                                                    <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mr-2"></span>
-                                                    Effective Date
-                                                </p>
-                                                <p className="text-sm font-bold text-slate-700">{emp.salary_effective_date || '-'}</p>
-                                            </div>
-                                        </div>
-                                        {isAdmin && <button onClick={() => handleEditClick(emp)} className="px-6 py-2.5 bg-white border border-gray-200 shadow-sm rounded-xl text-xs font-bold uppercase tracking-widest text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all active:scale-95 shrink-0 whitespace-nowrap">Edit Salary</button>}
-                                    </div>
-                                </div>
-                            )
-                        })
+                        filteredEmployees.map((emp, index) => (
+                            <EmployeeSalaryCard
+                                key={emp.id}
+                                emp={emp}
+                                index={index}
+                                isAdmin={isAdmin}
+                                onEditClick={handleEditClick}
+                                formatCurrency={formatCurrency}
+                            />
+                        ))
                     ) : (
                         <div className="bg-white p-12 rounded-2xl border border-gray-100 text-center"><p className="text-gray-400 italic">No employees found matching your search.</p></div>
                     )}
@@ -882,8 +1033,8 @@ export default function SalaryStructure() {
                                             <td className="px-6 py-4"><span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${component.status === 'Active' ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-400'}`}>{component.status}</span></td>
                                             <td className="px-6 py-4">
                                                 <div className="flex items-center space-x-3">
-                                                    <button onClick={() => handleEditComponent(key)} className="text-gray-400 hover:text-slate-900 transition-colors"><Edit2 className="w-4 h-4" /></button>
-                                                    <button onClick={() => handleDeleteComponent(key)} className="text-gray-400 hover:text-rose-600 transition-colors"><Trash2 className="w-4 h-4" /></button>
+                                                    <button onClick={() => handleEditComponent(key)} className="text-gray-400 hover:text-slate-900 transition-colors cursor-pointer"><Edit2 className="w-4 h-4" /></button>
+                                                    <button onClick={() => handleDeleteComponent(key)} className="text-gray-400 hover:text-rose-600 transition-colors cursor-pointer"><Trash2 className="w-4 h-4" /></button>
                                                 </div>
                                             </td>
                                         </tr>
@@ -933,8 +1084,8 @@ export default function SalaryStructure() {
                                             <td className="px-6 py-4"><Badge color={deduction.status === 'Active' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-gray-100 text-gray-500'}>{deduction.status}</Badge></td>
                                             <td className="px-6 py-4 text-right">
                                                 <div className="flex justify-end space-x-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                    <button onClick={() => handleEditCustomDeduction(deduction)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit2 className="w-4 h-4" /></button>
-                                                    <button onClick={() => handleDeleteCustomDeduction(deduction.id)} className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /></button>
+                                                    <button onClick={() => handleEditCustomDeduction(deduction)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"><Edit2 className="w-4 h-4" /></button>
+                                                    <button onClick={() => handleDeleteCustomDeduction(deduction.id)} className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"><Trash2 className="w-4 h-4" /></button>
                                                 </div>
                                             </td>
                                         </tr>
@@ -978,7 +1129,7 @@ export default function SalaryStructure() {
                                 <div className="flex items-center space-x-3"><button onClick={() => setNewComponent(prev => ({ ...prev, is_statutory: !prev.is_statutory }))} className={`w-10 h-5 rounded-full relative transition-colors ${newComponent.is_statutory ? 'bg-amber-600' : 'bg-gray-200'}`}><div className={`w-4 h-4 bg-white rounded-full absolute top-0.5 shadow-sm transition-transform ${newComponent.is_statutory ? 'left-5' : 'left-0.5'}`} /></button><span className="text-xs font-bold text-gray-700">Statutory Compliance</span></div>
                             </div>
                         </div>
-                        <div className="flex justify-end items-center px-6 py-4 bg-gray-50 border-t border-gray-100 gap-3"><button onClick={() => setIsAddComponentModalOpen(false)} className="px-4 py-2 border border-gray-200 rounded-lg text-sm font-bold text-gray-600 hover:bg-white">Cancel</button><button onClick={handleAddComponent} className="px-4 py-2 bg-slate-900 text-white rounded-lg text-sm font-bold hover:bg-slate-800">{editingComponentKey ? 'Update Component' : 'Add Component'}</button></div>
+                        <div className="flex justify-end items-center px-6 py-4 bg-gray-50 border-t border-gray-100 gap-3"><button type="button" onClick={() => setIsAddComponentModalOpen(false)} className="px-4 py-2 border border-gray-200 rounded-lg text-sm font-bold text-gray-600 hover:bg-white">Cancel</button><button type="button" onClick={() => handleAddComponent(false)} className="px-4 py-2 bg-slate-900 text-white rounded-lg text-sm font-bold hover:bg-slate-800">{editingComponentKey ? 'Update Component' : 'Add Component'}</button></div>
                     </div>
                 </div>
             )}
@@ -989,15 +1140,30 @@ export default function SalaryStructure() {
                     <div className="relative w-full max-w-3xl bg-white rounded-2xl shadow-xl max-h-[90vh] flex flex-col overflow-hidden">
                         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-white z-10"><div><h3 className="text-xl font-bold text-slate-800">Edit Salary Structure</h3><p className="text-sm text-gray-500">Configure salary structure for {editingEmployee?.first_name} {editingEmployee?.last_name} ({editingEmployee?.employee_id})</p></div><button onClick={() => setIsEditModalOpen(false)} className="p-2 text-gray-400 hover:bg-gray-100 rounded-lg transition-colors"><X className="w-5 h-5" /></button></div>
                         <div className="flex-1 overflow-y-auto p-6 bg-slate-50/50">
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                                <div className="space-y-1.5 md:col-span-1"><label className="text-xs font-bold text-gray-700 uppercase tracking-wider">Basic Salary (₹)</label><input type="number" value={basicSalary} readOnly className="w-full px-4 py-2.5 bg-slate-50 border border-gray-200 rounded-xl text-lg font-bold text-slate-900 cursor-not-allowed" /></div>
+                            <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                                <div className="space-y-1.5 md:col-span-1"><label className="text-xs font-bold text-gray-700 uppercase tracking-wider">Monthly CTC (₹)</label><input type="text" value={formatCurrency(basicSalary * 2)} readOnly className="w-full px-4 py-2.5 bg-slate-100 border border-gray-200 rounded-xl text-lg font-bold text-slate-900 cursor-not-allowed" /></div>
+                                <div className="space-y-1.5 md:col-span-1"><label className="text-xs font-bold text-gray-700 uppercase tracking-wider">Basic Salary (₹)</label><input type="text" value={formatCurrency(basicSalary)} readOnly className="w-full px-4 py-2.5 bg-slate-50 border border-gray-200 rounded-xl text-lg font-bold text-slate-900 cursor-not-allowed" /></div>
                                 <div className="space-y-1.5 md:col-span-1"><label className="text-xs font-bold text-gray-700 uppercase tracking-wider">Effective Date</label><input type="date" value={effectiveDate} readOnly className="w-full px-4 py-2.5 bg-slate-50 border border-gray-200 rounded-xl text-sm font-medium text-slate-900 cursor-not-allowed" /></div>
                                 <div className="space-y-1.5 md:col-span-1"><label className="text-xs font-bold text-gray-700 uppercase tracking-wider">Employee Details</label><div className="px-4 py-2.5 bg-slate-100 border border-slate-200 rounded-xl"><p className="text-sm font-bold text-slate-800 truncate">{editingEmployee?.designation || 'N/A'}</p><p className="text-xs text-slate-500">{editingEmployee?.department || 'N/A'}</p></div></div>
                             </div>
                             <h4 className="text-sm font-bold text-slate-800 mb-4 flex items-center"><span className="w-1 h-5 bg-blue-600 rounded-full mr-2"></span>Salary Components Configuration</h4>
                             <div className="space-y-3">
                                 <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex items-center justify-between">
-                                    <div className="flex items-center space-x-4"><div className="w-12 h-6 bg-slate-200 rounded-full relative opacity-50"><div className="w-5 h-5 bg-white rounded-full absolute right-1 top-0.5 shadow-sm"></div></div><div><p className="font-bold text-slate-800">Basic Salary</p><p className="text-xs text-gray-500">earning • fixed</p></div></div>
+                                    <div className="flex items-center space-x-4">
+                                        <div className="w-12 h-6 bg-slate-200 rounded-full relative opacity-50">
+                                            <div className="w-5 h-5 bg-white rounded-full absolute right-1 top-0.5 shadow-sm"></div>
+                                        </div>
+                                        <div>
+                                            <p className="font-bold text-slate-800">Basic Salary</p>
+                                            <p className="text-xs text-gray-500">
+                                                earning • {
+                                                    Object.values(structure).find(c => c.label?.toLowerCase() === 'basic salary' || c.label?.toLowerCase() === 'basic' || c.code?.toLowerCase() === 'basic')?.type || 'percentage'
+                                                } ({
+                                                    Object.values(structure).find(c => c.label?.toLowerCase() === 'basic salary' || c.label?.toLowerCase() === 'basic' || c.code?.toLowerCase() === 'basic')?.value || 50
+                                                }%)
+                                            </p>
+                                        </div>
+                                    </div>
                                     <p className="font-bold text-slate-900 text-lg">{formatCurrency(basicSalary)}</p>
                                 </div>
                                 {Object.entries(structure).map(([key, config]) => {
@@ -1015,7 +1181,26 @@ export default function SalaryStructure() {
                                                 <p className={`font-bold text-lg ${config.enabled ? 'text-slate-900' : 'text-gray-300'}`}>{config.category === 'deduction' && config.enabled && '-'}{formatCurrency(amount)}</p>
                                                 {config.enabled && (
                                                     config.type === 'fixed' ? (
-                                                        <div className="relative w-32"><input type="number" className="w-full pl-6 pr-2 py-1.5 text-right text-sm border border-gray-200 rounded-lg bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all" value={config.value} onChange={(e) => updateComponentValue(key, e.target.value)} /><span className="absolute left-2 top-1.5 text-gray-400 text-xs">₹</span></div>
+                                                        <div className="flex items-center space-x-2">
+                                                            {config.label?.toLowerCase().includes('special allowance') && (
+                                                                <button
+                                                                    onClick={autoBalanceSpecialAllowance}
+                                                                    className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-xs font-bold border border-blue-100 transition-all active:scale-95 flex items-center space-x-1 shrink-0"
+                                                                    title="Automatically adjust to match target CTC"
+                                                                >
+                                                                    <span>Auto-Balance</span>
+                                                                </button>
+                                                            )}
+                                                            <div className="relative w-32">
+                                                                <input
+                                                                    type="number"
+                                                                    className="w-full pl-6 pr-2 py-1.5 text-right text-sm border border-gray-200 rounded-lg bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all"
+                                                                    value={config.value}
+                                                                    onChange={(e) => updateComponentValue(key, e.target.value)}
+                                                                />
+                                                                <span className="absolute left-2 top-1.5 text-gray-400 text-xs">₹</span>
+                                                            </div>
+                                                        </div>
                                                     ) : (<div className="w-32 text-right px-2 py-1.5 text-sm text-gray-400 bg-gray-50 rounded-lg border border-transparent">{config.value}%</div>)
                                                 )}
                                             </div>
@@ -1039,6 +1224,91 @@ export default function SalaryStructure() {
                 </div>
             )}
 
+            {showEsiWarningModal && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6">
+                    <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-xs" onClick={() => setShowEsiWarningModal(false)} />
+                    <div className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl p-6 overflow-hidden border border-gray-100 flex flex-col animate-in zoom-in-95 duration-200">
+                        <div className="flex items-center space-x-3 mb-4">
+                            <div className="w-10 h-10 rounded-full bg-amber-50 flex items-center justify-center text-amber-500 shrink-0">
+                                <AlertTriangle className="w-5 h-5" />
+                            </div>
+                            <h3 className="text-lg font-bold text-slate-800">ESI Eligibility Warning</h3>
+                        </div>
+                        <div className="space-y-3.5 text-sm text-slate-600 mb-6">
+                            <p>
+                                Employee's gross salary (<span className="font-bold text-slate-900">{formatCurrency(calculated.gross)}</span>) exceeds the statutory ESI eligibility threshold.
+                            </p>
+                            <div className="bg-slate-50 border border-slate-100 rounded-xl p-3.5 space-y-1.5 font-medium">
+                                <p className="text-xs text-gray-400 font-bold uppercase tracking-wider mb-1">ESIC Regulations Thresholds</p>
+                                <div className="flex justify-between text-xs">
+                                    <span>Regular Employees:</span>
+                                    <span className="font-bold text-slate-800">₹21,000 / month</span>
+                                </div>
+                                <div className="flex justify-between text-xs">
+                                    <span>Specially Abled Employees:</span>
+                                    <span className="font-bold text-slate-800">₹25,000 / month</span>
+                                </div>
+                            </div>
+                            <p className="text-xs font-bold text-amber-600 bg-amber-50 border border-amber-100 rounded-xl p-3 flex items-start space-x-2">
+                                <span>This employee is NOT eligible for ESI deductions under Indian compliance.</span>
+                            </p>
+                            <p className="text-xs text-slate-400">
+                                Do you want to disable ESI and proceed to save the salary structure?
+                            </p>
+                        </div>
+                        <div className="flex space-x-3 justify-end">
+                            <button
+                                onClick={() => setShowEsiWarningModal(false)}
+                                className="px-4 py-2.5 border border-gray-200 rounded-xl text-xs font-bold uppercase tracking-wider text-gray-600 hover:bg-gray-50 transition-all active:scale-95"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={confirmSaveWithoutEsi}
+                                className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all active:scale-95 shadow-md"
+                            >
+                                Disable ESI & Save
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Delete Confirmation Modal */}
+            {deleteConfirmation.isOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 animate-in fade-in duration-200">
+                    <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setDeleteConfirmation(prev => ({ ...prev, isOpen: false }))} />
+                    <div className="relative w-full max-w-md bg-white rounded-2xl p-6 shadow-xl border border-gray-100 flex flex-col gap-5 animate-in zoom-in-95 duration-200">
+                        <div className="flex items-center space-x-3.5 border-b border-gray-50 pb-4">
+                            <div className="w-10 h-10 rounded-full bg-rose-50 flex items-center justify-center text-rose-600 shrink-0">
+                                <Trash2 className="w-5 h-5" />
+                            </div>
+                            <div>
+                                <h3 className="text-base font-black text-slate-900 leading-none">{deleteConfirmation.title}</h3>
+                                <p className="text-xs text-gray-400 mt-1 font-medium">This action cannot be undone</p>
+                            </div>
+                        </div>
+                        <div className="text-sm font-semibold text-slate-600 leading-relaxed">
+                            {deleteConfirmation.message}
+                        </div>
+                        <div className="flex space-x-3 justify-end pt-2">
+                            <button
+                                onClick={() => setDeleteConfirmation(prev => ({ ...prev, isOpen: false }))}
+                                className="px-4 py-2.5 border border-gray-200 rounded-xl text-xs font-bold uppercase tracking-wider text-gray-600 hover:bg-gray-50 transition-all active:scale-95 cursor-pointer"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={deleteConfirmation.onConfirm}
+                                className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all active:scale-95 shadow-md shadow-rose-200 cursor-pointer"
+                            >
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Deductions Modals */}
             <AddCustomDeductionModal
                 isOpen={isAddCustomOpen}
@@ -1054,6 +1324,90 @@ export default function SalaryStructure() {
                     setTimeout(() => setSuccessMessage(''), 3000)
                 }}
             />
+
+            {/* Global Impact Bulk Revision Confirmation Modal */}
+            {isImpactModalOpen && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6 animate-in fade-in duration-200">
+                    <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => !bulkRevisionLoading && setIsImpactModalOpen(false)} />
+                    <div className="relative w-full max-w-lg bg-white rounded-3xl p-6 shadow-2xl border border-gray-100 flex flex-col gap-6 animate-in zoom-in-95 duration-200">
+                        
+                        {/* Header */}
+                        <div className="flex items-start gap-4 pb-4 border-b border-gray-100">
+                            <div className="w-12 h-12 rounded-2xl bg-amber-50 flex items-center justify-center text-amber-550 shrink-0 shadow-inner">
+                                <AlertTriangle className="w-6 h-6 animate-bounce" />
+                            </div>
+                            <div>
+                                <h3 className="text-lg font-black text-slate-800 leading-tight">Global Salary Impact Revision</h3>
+                                <p className="text-xs text-gray-400 mt-1 font-semibold uppercase tracking-wider">Bulk Revision Interceptor</p>
+                            </div>
+                        </div>
+
+                        {/* Body Message */}
+                        <div className="text-sm font-semibold text-slate-600 leading-relaxed space-y-3">
+                            <p>
+                                You are modifying a global salary component value. Do you want to apply this new value to all existing active employees?
+                            </p>
+                            <p className="bg-slate-50 border border-slate-100 rounded-xl p-3.5 text-xs text-slate-550 flex items-start gap-2.5 font-medium">
+                                <Info className="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
+                                <span>
+                                    To keep the employee's total CTC unchanged, the difference will be automatically balanced against their <strong>Special Allowance</strong>.
+                                </span>
+                            </p>
+                            {pendingComponentData && (
+                                <div className="grid grid-cols-2 gap-4 bg-slate-100/50 p-3 rounded-xl border border-gray-200/50 text-xs mt-2">
+                                    <div>
+                                        <span className="text-gray-400">Component:</span>
+                                        <p className="font-bold text-slate-800">{pendingComponentData.name} ({pendingComponentData.code})</p>
+                                    </div>
+                                    <div>
+                                        <span className="text-gray-400">New Value:</span>
+                                        <p className="font-bold text-indigo-600">₹{pendingComponentData.value.toLocaleString('en-IN')}</p>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Actions */}
+                        <div className="flex flex-col sm:flex-row gap-3 justify-end pt-2">
+                            <button
+                                type="button"
+                                disabled={bulkRevisionLoading}
+                                onClick={() => setIsImpactModalOpen(false)}
+                                className="px-4 py-3 border border-gray-200 rounded-2xl text-xs font-bold uppercase tracking-wider text-gray-500 hover:bg-gray-50 transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                disabled={bulkRevisionLoading}
+                                onClick={() => handleAddComponent(true)}
+                                className="px-5 py-3 border border-indigo-200 hover:border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-2xl text-xs font-bold uppercase tracking-wider transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+                            >
+                                Save for New Hires Only
+                            </button>
+                            <button
+                                type="button"
+                                disabled={bulkRevisionLoading}
+                                onClick={handleBulkSalaryRevision}
+                                className="px-5 py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl text-xs font-bold uppercase tracking-wider transition-all active:scale-95 shadow-md shadow-slate-200 cursor-pointer flex items-center justify-center gap-2 min-w-44 disabled:opacity-80"
+                            >
+                                {bulkRevisionLoading ? (
+                                    <>
+                                        <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                                        <span>Revising Salaries...</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Save className="w-3.5 h-3.5" />
+                                        <span>Revise All Salaries</span>
+                                    </>
+                                )}
+                            </button>
+                        </div>
+
+                    </div>
+                </div>
+            )}
 
         </div>
     )

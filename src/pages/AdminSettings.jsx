@@ -1,6 +1,20 @@
 import { useEffect, useState } from 'react'
-import { CalendarDays, Plus, Trash2, Users, ClipboardList, History, Shield, Monitor, Smartphone, Globe, LogOut, RefreshCw } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { CalendarDays, Plus, Trash2, Users, ClipboardList, History, Shield, Monitor, Smartphone, Globe, LogOut, RefreshCw, Activity, Crown, FileSearch } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import { useToast } from '../context/ToastContext'
+import {
+    useAdminSettings,
+    useAddDepartment,
+    useAddHoliday,
+    useAddLeavePolicy,
+    useRemoveAdminRow,
+    useInitializeLeaveBalances
+} from '../hooks/useAdminData'
+import { logger } from '../lib/devLogger'
+import { getPublicIpAddress } from '../lib/networkInfo'
+import SecuritySettings from './SecuritySettings'
+import { usePlanEntitlements } from '../hooks/usePlanEntitlements'
 
 const Panel = ({ title, icon: Icon, children, accentColor = 'text-slate-500' }) => (
     <section className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
@@ -35,16 +49,13 @@ const getBrowserInfo = () => {
 }
 
 export default function AdminSettings() {
-    const [departments, setDepartments] = useState([])
-    const [holidays, setHolidays] = useState([])
-    const [leavePolicies, setLeavePolicies] = useState([])
-    const [auditLogs, setAuditLogs] = useState([])
-    const [notificationLogs, setNotificationLogs] = useState([])
-    const [notification, setNotification] = useState('')
+    const toast = useToast()
     const [currentUser, setCurrentUser] = useState(null)
     const [currentSession, setCurrentSession] = useState(null)
     const [userIp, setUserIp] = useState('Detecting...')
     const [signingOut, setSigningOut] = useState(false)
+    const [activeSettingsTab, setActiveSettingsTab] = useState('operations')
+    const { canUseFeature, loading: entitlementLoading } = usePlanEntitlements()
     const [forms, setForms] = useState({
         department: '',
         holidayName: '',
@@ -53,21 +64,15 @@ export default function AdminSettings() {
         annualBalance: ''
     })
 
-    const fetchSettings = async () => {
-        const [deptRes, holidayRes, leaveRes, auditRes, notificationRes] = await Promise.all([
-            supabase.from('departments').select('*').order('name'),
-            supabase.from('holidays').select('*').order('date', { ascending: true }),
-            supabase.from('leave_policies').select('*').order('leave_type'),
-            supabase.from('audit_logs').select('*').order('created_at', { ascending: false }).limit(25),
-            supabase.from('notification_logs').select('*').order('created_at', { ascending: false }).limit(25)
-        ])
+    // React Query hooks
+    const { data: adminData = {} } = useAdminSettings()
+    const { departments = [], holidays = [], leavePolicies = [], auditLogs = [], notificationLogs = [] } = adminData
 
-        if (!deptRes.error) setDepartments(deptRes.data || [])
-        if (!holidayRes.error) setHolidays(holidayRes.data || [])
-        if (!leaveRes.error) setLeavePolicies(leaveRes.data || [])
-        if (!auditRes.error) setAuditLogs(auditRes.data || [])
-        if (!notificationRes.error) setNotificationLogs(notificationRes.data || [])
-    }
+    const addDepartmentMutation = useAddDepartment()
+    const addHolidayMutation = useAddHoliday()
+    const addLeavePolicyMutation = useAddLeavePolicy()
+    const removeRowMutation = useRemoveAdminRow()
+    const initializeLeaveBalancesMutation = useInitializeLeaveBalances()
 
     const fetchSessionInfo = async () => {
         try {
@@ -76,79 +81,65 @@ export default function AdminSettings() {
             setCurrentUser(user)
             setCurrentSession(session)
         } catch (err) {
-            console.error('Failed to fetch session info:', err)
+            logger.error('Failed to fetch session info:', err)
         }
     }
 
     const detectIp = async () => {
-        try {
-            const res = await fetch('https://api.ipify.org?format=json')
-            const data = await res.json()
-            setUserIp(data.ip || '127.0.0.1')
-        } catch {
-            setUserIp('127.0.0.1')
-        }
+        setUserIp(await getPublicIpAddress())
     }
 
     useEffect(() => {
-        fetchSettings()
         fetchSessionInfo()
         detectIp()
     }, [])
 
-    const notify = (message) => {
-        setNotification(message)
-        setTimeout(() => setNotification(''), 3000)
-    }
-
-    const addDepartment = async () => {
+    const addDepartment = () => {
         const name = forms.department.trim()
         if (!name) return
-        const { error } = await supabase.from('departments').insert({ name })
-        if (error) return notify(error.message)
-        setForms(prev => ({ ...prev, department: '' }))
-        notify('Department added.')
-        fetchSettings()
+        addDepartmentMutation.mutate(name, {
+            onSuccess: () => {
+                setForms(prev => ({ ...prev, department: '' }))
+                toast.success('Department added.')
+            },
+            onError: (err) => toast.error(err.message || 'Failed to add department.')
+        })
     }
 
-    const addHoliday = async () => {
+    const addHoliday = () => {
         if (!forms.holidayName.trim() || !forms.holidayDate) return
-        const { error } = await supabase.from('holidays').insert({
-            name: forms.holidayName.trim(),
-            date: forms.holidayDate
+        addHolidayMutation.mutate({ name: forms.holidayName.trim(), date: forms.holidayDate }, {
+            onSuccess: () => {
+                setForms(prev => ({ ...prev, holidayName: '', holidayDate: '' }))
+                toast.success('Holiday added.')
+            },
+            onError: (err) => toast.error(err.message || 'Failed to add holiday.')
         })
-        if (error) return notify(error.message)
-        setForms(prev => ({ ...prev, holidayName: '', holidayDate: '' }))
-        notify('Holiday added.')
-        fetchSettings()
     }
 
-    const addLeavePolicy = async () => {
+    const addLeavePolicy = () => {
         if (!forms.leaveType.trim() || !forms.annualBalance) return
-        const { error } = await supabase.from('leave_policies').insert({
-            leave_type: forms.leaveType.trim(),
-            annual_balance: Number(forms.annualBalance) || 0
+        addLeavePolicyMutation.mutate({ leaveType: forms.leaveType.trim(), annualBalance: forms.annualBalance }, {
+            onSuccess: () => {
+                setForms(prev => ({ ...prev, leaveType: '', annualBalance: '' }))
+                toast.success('Leave policy added.')
+            },
+            onError: (err) => toast.error(err.message || 'Failed to add leave policy.')
         })
-        if (error) return notify(error.message)
-        setForms(prev => ({ ...prev, leaveType: '', annualBalance: '' }))
-        notify('Leave policy added.')
-        fetchSettings()
     }
 
-    const removeRow = async (table, id) => {
-        const { error } = await supabase.from(table).delete().eq('id', id)
-        if (error) return notify(error.message)
-        notify('Deleted successfully.')
-        fetchSettings()
+    const removeRow = (table, id) => {
+        removeRowMutation.mutate({ table, id }, {
+            onSuccess: () => toast.success('Deleted successfully.'),
+            onError: (err) => toast.error(err.message || 'Failed to delete.')
+        })
     }
 
-    const initializeLeaveBalances = async () => {
-        const { error } = await supabase.rpc('initialize_leave_balances', {
-            p_year: new Date().getFullYear()
+    const initializeLeaveBalances = () => {
+        initializeLeaveBalancesMutation.mutate(new Date().getFullYear(), {
+            onSuccess: () => toast.success('Leave balances initialized for active employees.'),
+            onError: (err) => toast.error(err.message || 'Failed to initialize leave balances.')
         })
-        if (error) return notify(error.message)
-        notify('Leave balances initialized for active employees.')
-        fetchSettings()
     }
 
     const handleSignOutAllDevices = async () => {
@@ -156,10 +147,10 @@ export default function AdminSettings() {
         try {
             const { error } = await supabase.auth.signOut({ scope: 'global' })
             if (error) throw error
-            notify('Signed out of all devices successfully.')
+            toast.success('Signed out of all devices successfully.')
             setTimeout(() => window.location.href = '/login', 1500)
         } catch (err) {
-            notify('Failed to sign out: ' + err.message)
+            toast.error('Failed to sign out: ' + err.message)
         } finally {
             setSigningOut(false)
         }
@@ -167,15 +158,56 @@ export default function AdminSettings() {
 
     return (
         <div className="space-y-6">
-            {notification && (
-                <div className="fixed top-4 right-4 bg-slate-900 text-white px-5 py-3 rounded-xl shadow-lg z-50 text-sm font-bold">
-                    {notification}
-                </div>
-            )}
 
             <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
                 <p className="text-sm text-gray-500">Manage operational setup used by payroll, attendance, and employee records.</p>
             </div>
+
+            <div className="inline-flex items-center gap-1 bg-white p-1 rounded-xl border border-gray-200 shadow-sm">
+                {[
+                    { key: 'operations', label: 'Operations' },
+                    { key: 'security', label: 'Security', feature: 'security_controls' },
+                    { key: 'enterprise', label: 'Enterprise Admin' }
+                ].filter(tab => !tab.feature || entitlementLoading || canUseFeature(tab.feature)).map(tab => (
+                    <button
+                        key={tab.key}
+                        onClick={() => setActiveSettingsTab(tab.key)}
+                        className={`px-4 py-2 rounded-lg text-sm font-bold transition ${activeSettingsTab === tab.key ? 'bg-slate-900 text-white' : 'text-gray-600 hover:bg-slate-50 hover:text-slate-900'}`}
+                    >
+                        {tab.label}
+                    </button>
+                ))}
+            </div>
+
+            {activeSettingsTab === 'security' ? (
+                <SecuritySettings />
+            ) : activeSettingsTab === 'enterprise' ? (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    {canUseFeature('audit_logs') && (
+                        <EnterpriseCard
+                            to="/audit-logs"
+                            icon={FileSearch}
+                            title="Audit Log Viewer"
+                            description="Filter and inspect write events, actor IDs, and before/after payloads."
+                        />
+                    )}
+                    <EnterpriseCard
+                        to="/subscription-management"
+                        icon={Crown}
+                        title="Subscription Management"
+                        description="Manage plan assignment, billing status, feature limits, and usage counters."
+                    />
+                    {canUseFeature('system_health') && (
+                        <EnterpriseCard
+                            to="/system-health"
+                            icon={Activity}
+                            title="System Health"
+                            description="Check DB connectivity, mail logs, report jobs, sessions, and health markers."
+                        />
+                    )}
+                </div>
+            ) : (
+                <>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <Panel title="Departments" icon={Users}>
@@ -335,23 +367,23 @@ export default function AdminSettings() {
                             {/* User info */}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div className="bg-slate-50 rounded-xl p-4">
-                                    <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Account Email</p>
+                                    <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Account Email</p>
                                     <p className="text-sm font-bold text-slate-800 mt-1.5">{currentUser?.email || 'N/A'}</p>
                                 </div>
                                 <div className="bg-slate-50 rounded-xl p-4">
-                                    <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Auth Provider</p>
+                                    <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Auth Provider</p>
                                     <p className="text-sm font-bold text-slate-800 mt-1.5 capitalize">
                                         {currentUser?.app_metadata?.provider || 'email'}
                                     </p>
                                 </div>
                                 <div className="bg-slate-50 rounded-xl p-4">
-                                    <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Account Created</p>
+                                    <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Account Created</p>
                                     <p className="text-sm font-bold text-slate-800 mt-1.5">
                                         {currentUser?.created_at ? new Date(currentUser.created_at).toLocaleDateString() : 'N/A'}
                                     </p>
                                 </div>
                                 <div className="bg-slate-50 rounded-xl p-4">
-                                    <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Browser</p>
+                                    <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Browser</p>
                                     <div className="flex items-center gap-1.5 mt-1.5">
                                         <Globe className="w-3.5 h-3.5 text-gray-400" />
                                         <p className="text-sm font-bold text-slate-800">{browser} / {os}</p>
@@ -423,6 +455,18 @@ export default function AdminSettings() {
                     </table>
                 </div>
             </Panel>
+                </>
+            )}
         </div>
     )
 }
+
+const EnterpriseCard = ({ to, icon: Icon, title, description }) => (
+    <Link to={to} className="block bg-white rounded-2xl border border-gray-100 shadow-sm p-6 hover:border-blue-200 hover:shadow-md transition">
+        <div className="w-11 h-11 rounded-xl bg-slate-900 text-white flex items-center justify-center mb-5">
+            <Icon className="w-5 h-5" />
+        </div>
+        <h3 className="text-lg font-black text-slate-900">{title}</h3>
+        <p className="mt-2 text-sm text-slate-500 leading-6">{description}</p>
+    </Link>
+)

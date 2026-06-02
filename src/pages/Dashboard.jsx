@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
+import { useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useDashboardData } from '../hooks/useDashboardData'
 import { formatDistanceToNow } from 'date-fns'
 import { formatMonthYear } from '../lib/dateUtils'
 import {
@@ -7,10 +8,7 @@ import {
     IndianRupee,
     CalendarCheck,
     AlertTriangle,
-    CheckCircle2,
-    Clock,
-    FileText,
-    TrendingUp
+    Clock
 } from 'lucide-react'
 
 import { useCompany } from '../context/CompanyContext'
@@ -20,7 +18,7 @@ import { useCompany } from '../context/CompanyContext'
 const StatCard = ({ title, value, icon: Icon, colorClass, borderClass }) => (
     <div className={`bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex items-center justify-between transition-all duration-300 hover:scale-[1.02] hover:shadow-md cursor-default group border-l-[6px] ${borderClass}`}>
         <div>
-            <p className="text-[11px] font-bold text-gray-400 mb-1 group-hover:text-gray-500 transition-colors uppercase tracking-widest">{title}</p>
+            <p className="text-[11px] font-bold text-gray-600 mb-1 group-hover:text-gray-500 transition-colors uppercase tracking-widest">{title}</p>
             <p className="text-3xl font-bold text-gray-900 group-hover:scale-105 transition-transform origin-left">{value}</p>
         </div>
         <div className={`p-3 rounded-xl transition-all duration-300 group-hover:rotate-12 group-hover:scale-110 shadow-sm ${colorClass}`}>
@@ -40,7 +38,7 @@ const ActivityItem = ({ title, time, status }) => {
         <div className="flex items-center justify-between py-4 group">
             <div>
                 <p className="text-sm font-bold text-gray-800 group-hover:text-blue-600 transition-colors">{title}</p>
-                <p className="text-xs text-gray-400 mt-1">{time}</p>
+                <p className="text-xs text-gray-600 mt-1">{time}</p>
             </div>
             {status && (
                 <span className={`px-3 py-1 rounded-full text-[10px] font-bold capitalize ${statusColors[status?.toLowerCase()] || 'bg-gray-100'}`}>
@@ -51,7 +49,7 @@ const ActivityItem = ({ title, time, status }) => {
     )
 }
 
-const TaskItem = ({ title, due, priority }) => {
+const TaskItem = ({ title, due, priority, onClick }) => {
     const priorityColors = {
         'high': 'bg-rose-100 text-rose-600',
         'medium': 'bg-amber-100 text-amber-600',
@@ -59,10 +57,13 @@ const TaskItem = ({ title, due, priority }) => {
     }
 
     return (
-        <div className="flex items-center justify-between py-4 border-b border-gray-50 last:border-0 hover:bg-gray-50/50 transition-colors px-2 -mx-2 rounded-lg">
+        <div 
+            onClick={onClick}
+            className={`flex items-center justify-between py-4 border-b border-gray-50 last:border-0 hover:bg-slate-50 transition-all duration-200 px-3 -mx-3 rounded-xl ${onClick ? 'cursor-pointer hover:pl-4 group' : ''}`}
+        >
             <div>
-                <p className="text-sm font-bold text-gray-800">{title}</p>
-                <p className="text-xs text-gray-400 mt-1">Due: {due}</p>
+                <p className="text-sm font-bold text-gray-800 group-hover:text-blue-600 transition-colors">{title}</p>
+                <p className="text-xs text-gray-600 mt-1">Due: {due}</p>
             </div>
             <span className={`px-3 py-1 rounded-full text-[10px] font-bold capitalize ${priorityColors[priority]}`}>
                 {priority}
@@ -87,156 +88,137 @@ const ProgressBar = ({ label, percentage, colorClass = "bg-slate-900" }) => (
 )
 
 export default function Dashboard() {
+    const navigate = useNavigate()
     const { company } = useCompany()
-    const [loading, setLoading] = useState(true)
-    const [stats, setStats] = useState({
-        totalEmployees: 0,
-        monthlyPayrollCost: 0,
-        attendanceRate: 0,
-        pendingCompliance: 0
-    })
-    const [activities, setActivities] = useState([])
-    const [tasks, setTasks] = useState([])
-    const [payrollStatus, setPayrollStatus] = useState({
-        attendance: 0,
-        calculation: 0,
-        compliance: 0,
-        payslip: 0
-    })
+    const { data: dashboardData, isLoading: loading } = useDashboardData()
 
-    useEffect(() => {
-        const fetchDashboardData = async () => {
-            try {
-                setLoading(true)
-                const today = new Date()
+    const today = new Date()
+    const todayDate = today.getDate()
+    const todayMonthShort = today.toLocaleString('default', { month: 'short' })
 
-                // --- 1. Query Preparation ---
-                const now = new Date()
-                const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1)
-                const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59)
-
-                // Execute all database fetches in parallel to resolve network waterfall delays
-                const [
-                    employeeCountRes,
-                    latestRunRes,
-                    salariesRes,
-                    attendanceRes,
-                    complianceRes,
-                    recentRunsRes,
-                    newHiresRes,
-                    recentReportsRes
-                ] = await Promise.all([
-                    supabase.from('employees').select('*', { count: 'exact', head: true }).eq('status', 'active'),
-                    supabase.from('payroll_runs').select('total_amount').eq('status', 'Completed').order('created_at', { ascending: false }).limit(1).maybeSingle(),
-                    supabase.from('employees').select('salary').eq('status', 'active'),
-                    supabase.from('attendance').select('status').gte('date', lastMonthStart.toISOString()).lte('date', lastMonthEnd.toISOString()),
-                    supabase.from('generated_reports').select('*', { count: 'exact', head: true }).eq('report_type', 'Compliance').eq('status', 'pending'),
-                    supabase.from('payroll_runs').select('month_year, created_at, status').order('created_at', { ascending: false }).limit(2),
-                    supabase.from('employees').select('first_name, last_name, created_at').order('created_at', { ascending: false }).limit(2),
-                    supabase.from('generated_reports').select('title, created_at').order('created_at', { ascending: false }).limit(2)
-                ])
-
-                if (employeeCountRes.error) throw employeeCountRes.error
-                if (recentRunsRes.error) throw recentRunsRes.error
-                if (newHiresRes.error) throw newHiresRes.error
-                if (recentReportsRes.error) throw recentReportsRes.error
-
-                const employeeCount = employeeCountRes.count
-                const latestRun = latestRunRes.data
-                const salaries = salariesRes.data
-                const attendanceLogs = attendanceRes.data
-                const pendingCompliance = complianceRes.count
-                const recentRuns = recentRunsRes.data
-                const newHires = newHiresRes.data
-                const recentReports = recentReportsRes.data
-
-                let payrollCost = latestRun?.total_amount
-                if (!payrollCost) {
-                    payrollCost = salaries?.reduce((sum, e) => sum + (Number(e.salary) || 0), 0) || 0
+    const { stats, activities, tasks, payrollStatus } = useMemo(() => {
+        if (!dashboardData) {
+            return {
+                stats: {
+                    totalEmployees: 0,
+                    monthlyPayrollCost: 0,
+                    attendanceRate: 0,
+                    pendingCompliance: 0
+                },
+                activities: [],
+                tasks: [],
+                payrollStatus: {
+                    attendance: 0,
+                    calculation: 0,
+                    compliance: 0,
+                    payslip: 0
                 }
-
-                const totalLogs = attendanceLogs?.length || 0
-                const presentLogs = attendanceLogs?.filter(l => l.status === 'present').length || 0
-                const attendanceRate = totalLogs > 0 ? ((presentLogs / totalLogs) * 100).toFixed(1) : 0
-
-                setStats({
-                    totalEmployees: employeeCount || 0,
-                    monthlyPayrollCost: payrollCost,
-                    attendanceRate: attendanceRate,
-                    pendingCompliance: pendingCompliance || 0
-                })
-
-                const mergedActivities = [
-                    ...(recentRuns?.map(run => {
-                        const date = new Date(run.month_year + '-01')
-                        return isNaN(date.getTime()) ? null : {
-                            title: `Payroll processed for ${formatMonthYear(run.month_year)}`,
-                            date,
-                            status: run.status
-                        }
-                    }).filter(Boolean) || []),
-                    ...(newHires?.map(emp => {
-                        const date = new Date(emp.created_at)
-                        return isNaN(date.getTime()) ? null : {
-                            title: `Employee onboarding - ${emp.first_name} ${emp.last_name}`,
-                            date,
-                            status: 'completed'
-                        }
-                    }).filter(Boolean) || []),
-                    ...(recentReports?.map(rep => {
-                        const date = new Date(rep.created_at)
-                        return isNaN(date.getTime()) ? null : {
-                            title: `${rep.title} generated`,
-                            date,
-                            status: 'completed'
-                        }
-                    }).filter(Boolean) || [])
-                ].sort((a, b) => b.date - a.date).slice(0, 5)
-
-                setActivities(mergedActivities)
-
-                // --- 3. Upcoming Tasks (Logic Based) ---
-                const upcoming = []
-
-                // Payroll Task
-                if (today.getDate() > 20) {
-                    upcoming.push({ title: 'Finalize monthly payroll processing', due: '25th ' + today.toLocaleString('default', { month: 'short' }), priority: 'high' })
-                } else {
-                    upcoming.push({ title: 'Reconcile attendance records', due: '20th ' + today.toLocaleString('default', { month: 'short' }), priority: 'medium' })
-                }
-
-                // Compliance Task
-                if (pendingCompliance > 0) {
-                    upcoming.push({ title: `Review ${pendingCompliance} pending tax declarations`, due: 'Immediate', priority: 'high' })
-                } else {
-                    upcoming.push({ title: 'Verify statutory compliance filings', due: 'End of month', priority: 'low' })
-                }
-
-                setTasks(upcoming)
-
-                // --- 4. Payroll Flow Checklist ---
-                setPayrollStatus({
-                    attendance: 100,
-                    calculation: today.getDate() > 22 ? 100 : 40,
-                    compliance: pendingCompliance === 0 ? 100 : 75,
-                    payslip: today.getDate() > 25 ? 100 : 0
-                })
-
-            } catch (error) {
-                console.error('Error fetching dashboard data:', error)
-            } finally {
-                setLoading(false)
             }
         }
 
-        fetchDashboardData()
-    }, [])
+        const employeeCount = dashboardData.employeeCount
+        const latestRun = dashboardData.latestRun
+        const salaries = dashboardData.salaries
+        const attendanceLogs = dashboardData.attendanceLogs
+        const pendingCompliance = dashboardData.pendingCompliance
+        const recentRuns = dashboardData.recentRuns
+        const newHires = dashboardData.newHires
+        const recentReports = dashboardData.recentReports
+
+        let payrollCost = latestRun?.total_amount
+        if (!payrollCost) {
+            payrollCost = salaries?.reduce((sum, e) => sum + (Number(e.salary || 0) + Number(e.salary_allowances || 0)), 0) || 0
+        }
+
+        const totalLogs = attendanceLogs?.length || 0
+        const presentLogs = attendanceLogs?.filter(l => l.status === 'present').length || 0
+        const attendanceRate = totalLogs > 0 ? ((presentLogs / totalLogs) * 100).toFixed(1) : 0
+
+        const calculatedStats = {
+            totalEmployees: employeeCount || 0,
+            monthlyPayrollCost: payrollCost,
+            attendanceRate: attendanceRate,
+            pendingCompliance: pendingCompliance || 0
+        }
+
+        const mergedActivities = [
+            ...(recentRuns?.map(run => {
+                const date = new Date(run.month_year + '-01')
+                return isNaN(date.getTime()) ? null : {
+                    title: `Payroll processed for ${formatMonthYear(run.month_year)}`,
+                    date,
+                    status: run.status
+                }
+            }).filter(Boolean) || []),
+            ...(newHires?.map(emp => {
+                const date = new Date(emp.created_at)
+                return isNaN(date.getTime()) ? null : {
+                    title: `Employee onboarding - ${emp.first_name} ${emp.last_name}`,
+                    date,
+                    status: 'completed'
+                }
+            }).filter(Boolean) || []),
+            ...(recentReports?.map(rep => {
+                const date = new Date(rep.created_at)
+                return isNaN(date.getTime()) ? null : {
+                    title: `${rep.title} generated`,
+                    date,
+                    status: 'completed'
+                }
+            }).filter(Boolean) || [])
+        ].sort((a, b) => b.date - a.date).slice(0, 5)
+
+        const upcoming = []
+
+        // Salary Configuration Task
+        const pendingSalaryConfigs = salaries?.filter(e => {
+            const hasSalary = e.salary && parseFloat(e.salary) > 0
+            const hasStructure = e.salary_structure && Object.keys(e.salary_structure).length > 0
+            return !hasSalary || !hasStructure
+        }).length || 0
+        if (pendingSalaryConfigs > 0) {
+            upcoming.push({ 
+                title: `Configure salary for ${pendingSalaryConfigs} pending employees`, 
+                due: 'Immediate', 
+                priority: 'high',
+                action: '/salary-structure'
+            })
+        }
+
+        // Payroll Task
+        if (todayDate > 20) {
+            upcoming.push({ title: 'Finalize monthly payroll processing', due: '25th ' + todayMonthShort, priority: 'high', action: '/payroll-processing' })
+        } else {
+            upcoming.push({ title: 'Reconcile attendance records', due: '20th ' + todayMonthShort, priority: 'medium', action: '/attendance' })
+        }
+
+        // Compliance Task
+        if (pendingCompliance > 0) {
+            upcoming.push({ title: `Review ${pendingCompliance} pending tax declarations`, due: 'Immediate', priority: 'high', action: '/tax-declarations' })
+        } else {
+            upcoming.push({ title: 'Verify statutory compliance filings', due: 'End of month', priority: 'low' })
+        }
+
+        const calculatedPayrollStatus = {
+            attendance: 100,
+            calculation: todayDate > 22 ? 100 : 40,
+            compliance: pendingCompliance === 0 ? 100 : 75,
+            payslip: todayDate > 25 ? 100 : 0
+        }
+
+        return {
+            stats: calculatedStats,
+            activities: mergedActivities,
+            tasks: upcoming,
+            payrollStatus: calculatedPayrollStatus
+        }
+    }, [dashboardData, todayDate, todayMonthShort])
 
     return (
         <div className="space-y-6">
             <header>
                 <h1 className="text-3xl font-bold text-slate-800">Welcome Back, {company?.name || 'Admin'}</h1>
-                <p className="text-sm font-medium text-gray-400 mt-1">Here is what is happening with your payroll system today.</p>
+                <p className="text-sm font-medium text-gray-600 mt-1">Here is what is happening with your payroll system today.</p>
             </header>
 
             {loading ? (
@@ -297,9 +279,9 @@ export default function Dashboard() {
                                     <ProgressBar label="Payslip Generation & Distribution" percentage={payrollStatus.payslip} colorClass="bg-blue-500" />
                                 </div>
                             </div>
-                            <div className="flex items-center justify-between pt-6 border-t border-gray-50 mt-6 text-sm text-gray-400 font-bold">
+                            <div className="flex items-center justify-between pt-6 border-t border-gray-50 mt-6 text-sm text-gray-600 font-bold">
                                 <span>Cycle Period: 1st - 30th of Current Month</span>
-                                <span className="text-slate-700 font-black cursor-pointer hover:underline">View Flow Details</span>
+                                <span onClick={() => navigate('/payroll-processing')} className="text-slate-700 font-black cursor-pointer hover:underline">View Flow Details</span>
                             </div>
                         </div>
 
@@ -309,15 +291,21 @@ export default function Dashboard() {
                                 <h3 className="text-lg font-bold text-slate-800 mb-6">Action Needed</h3>
                                 <div className="divide-y divide-gray-50">
                                     {tasks.length === 0 ? (
-                                        <div className="py-6 text-center text-gray-400 text-sm">All tasks are up to date!</div>
+                                        <div className="py-6 text-center text-gray-600 text-sm">All tasks are up to date!</div>
                                     ) : (
                                         tasks.map((task, i) => (
-                                            <TaskItem key={i} title={task.title} due={task.due} priority={task.priority} />
+                                            <TaskItem 
+                                                key={i} 
+                                                title={task.title} 
+                                                due={task.due} 
+                                                priority={task.priority} 
+                                                onClick={task.action ? () => navigate(task.action) : undefined}
+                                            />
                                         ))
                                     )}
                                 </div>
                             </div>
-                            <button className="w-full py-3 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition shadow-lg shadow-slate-100 flex items-center justify-center space-x-2 mt-6 uppercase tracking-wider">
+                            <button onClick={() => navigate('/reports')} className="w-full py-3 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition shadow-lg shadow-slate-100 flex items-center justify-center space-x-2 mt-6 uppercase tracking-wider">
                                 <span>Go to Compliance</span>
                             </button>
                         </div>
@@ -327,11 +315,11 @@ export default function Dashboard() {
                     <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-sm">
                         <div className="flex justify-between items-center mb-6">
                             <h3 className="text-lg font-bold text-slate-800">Recent Activities</h3>
-                            <button className="text-sm font-bold text-blue-600 hover:text-blue-700 transition">View History</button>
+                            <button onClick={() => navigate('/reports')} className="text-sm font-bold text-blue-600 hover:text-blue-700 transition">View History</button>
                         </div>
                         <div className="divide-y divide-gray-50">
                             {activities.length === 0 ? (
-                                <div className="py-6 text-center text-gray-400 text-sm">No recent activities found.</div>
+                                <div className="py-6 text-center text-gray-600 text-sm">No recent activities found.</div>
                             ) : (
                                 activities.map((activity, i) => (
                                     <ActivityItem

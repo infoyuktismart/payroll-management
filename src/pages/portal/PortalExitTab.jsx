@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { LogOut, CheckCircle, Clock3, X, AlertCircle, Check } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
+import { applyCompanyFilter, withCompanyScope } from '../../services/tenantScope'
 
 const formatDateSafe = (value, options = { month: 'short', day: '2-digit', year: 'numeric' }, fallback = 'N/A') => {
     if (!value) return fallback
@@ -33,16 +34,18 @@ export default function PortalExitTab({
         }
         try {
             setLoading(true)
-            const { error } = await supabase.from('exits').insert([{
+            const { error } = await supabase.from('exits').insert([withCompanyScope({
                 employee_id: viewAsId,
                 ...resignationData,
                 status: 'pending'
-            }])
+            })])
             if (error) throw error
 
-            const { data: exitData } = await supabase
-                .from('exits')
-                .select('*')
+            const { data: exitData } = await applyCompanyFilter(
+                supabase
+                    .from('exits')
+                    .select('*')
+            )
                 .eq('employee_id', viewAsId)
                 .order('created_at', { ascending: false })
                 .limit(1)
@@ -179,11 +182,11 @@ export default function PortalExitTab({
                                 return (
                                     <div key={step} className="flex flex-col items-center">
                                         <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold z-10 transition-colors border-2
-                                            ${isActive ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-gray-400 border-gray-200'}`}
+                                            ${isActive ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-gray-600 border-gray-200'}`}
                                         >
                                             {isActive ? <Check className="w-4 h-4" /> : idx + 1}
                                         </div>
-                                        <span className={`mt-2 text-xs font-bold transition-colors ${isActive ? 'text-slate-900' : 'text-gray-400'}`}>
+                                        <span className={`mt-2 text-xs font-bold transition-colors ${isActive ? 'text-slate-900' : 'text-gray-600'}`}>
                                             {labels[idx]}
                                         </span>
                                     </div>
@@ -194,7 +197,7 @@ export default function PortalExitTab({
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-8 pt-8 border-t border-gray-100">
                         <div>
-                            <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4">Request Details</h4>
+                            <h4 className="text-sm font-bold text-gray-600 uppercase tracking-wider mb-4">Request Details</h4>
                             <div className="space-y-4 bg-slate-50 rounded-xl p-5">
                                 {[
                                     ['Resignation Date', formatDateSafe(activeExit.resignation_date)],
@@ -210,7 +213,7 @@ export default function PortalExitTab({
                             </div>
                         </div>
                         <div>
-                            <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4">Clearance Tracking</h4>
+                            <h4 className="text-sm font-bold text-gray-600 uppercase tracking-wider mb-4">Clearance Tracking</h4>
                             <div className="grid grid-cols-2 gap-4">
                                 {[
                                     { label: 'IT', status: activeExit.it_clearance },

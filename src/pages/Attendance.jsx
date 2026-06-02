@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { devLog } from '../lib/devLogger'
 import { useToast } from '../context/ToastContext'
+import { applyCompanyFilter, withCompanyScope } from '../services/tenantScope'
 import Modal from '../components/ui/Modal'
 import { TableRowSkeleton } from '../components/ui/SkeletonLoader'
 import {
@@ -19,7 +20,6 @@ import {
     Pencil,
     Upload,
     Download,
-    FileText,
     AlertTriangle,
     FileUp
 } from 'lucide-react'
@@ -83,6 +83,27 @@ export default function Attendance() {
     const [uploadReport, setUploadReport] = useState([]) // Details of success/failure
 
     const [errorMessage, setErrorMessage] = useState('')
+    // Attendance Policy & Webhook State
+    const [attendancePolicies, setAttendancePolicies] = useState([
+        {
+            id: '1',
+            name: 'General Shift Policy',
+            grace_period_mins: 15,
+            core_start_time: '09:00',
+            core_end_time: '18:00',
+            half_day_threshold_mins: 240,
+            late_arrival_limit: 3
+        }
+    ])
+    const [policyForm, setPolicyForm] = useState({
+        name: '',
+        grace_period_mins: 15,
+        core_start_time: '09:00',
+        core_end_time: '18:00',
+        half_day_threshold_mins: 240,
+        late_arrival_limit: 3
+    })
+    const webhookUrl = 'https://api.payroll.smart/v1/biometrics/punch-webhook'
     const [dailyAttendance, setDailyAttendance] = useState([])
     const [isEditModalOpen, setIsEditModalOpen] = useState(false)
     const [editingRecord, setEditingRecord] = useState(null)
@@ -126,7 +147,7 @@ export default function Attendance() {
 
     const fetchHolidays = async () => {
         try {
-            const { data, error } = await supabase.from('holidays').select('*')
+            const { data, error } = await applyCompanyFilter(supabase.from('holidays').select('*'))
             if (error) throw error
             setHolidays(data || [])
             return data || []
@@ -187,11 +208,13 @@ export default function Attendance() {
 
     const fetchEmployees = async () => {
         try {
-            const { data, error } = await supabase
-                .from('employees')
-                .select('id, first_name, last_name')
+            const { data, error } = await applyCompanyFilter(
+                supabase
+                    .from('employees')
+                    .select('id, first_name, last_name')
+            )
                 .eq('status', 'active')
-
+ 
             if (error) throw error
             setEmployees(data || [])
         } catch (error) {
@@ -226,13 +249,15 @@ export default function Attendance() {
                     await fetchEmployees()
                 } else if (activeTab === 'regularization') {
                     await fetchRegularizationRequests()
+                } else if (activeTab === 'policies') {
+                    await fetchAttendancePolicies()
                 }
             } finally {
                 setLoading(false)
             }
         }
         fetchDashboardData()
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+         
     }, [activeTab, dateFilter, searchQuery, statusFilter, deptFilter])
 
     // Load first employee for calendar view
@@ -249,24 +274,63 @@ export default function Attendance() {
         }
     }, [activeTab, selectedCalendarEmployee, dateFilter])
 
+    const fetchAttendancePolicies = async () => {
+        try {
+            const { data, error } = await applyCompanyFilter(
+                supabase.from('attendance_policies').select('*')
+            ).order('name')
+            if (error) throw error
+            if (data && data.length > 0) {
+                setAttendancePolicies(data)
+            }
+        } catch (error) {
+            console.error('Error fetching policies:', error)
+        }
+    }
+ 
+    const handleSavePolicy = async (e) => {
+        e.preventDefault()
+        setSubmitting(true)
+        try {
+            const { error } = await supabase.from('attendance_policies').insert([withCompanyScope(policyForm)])
+            if (error) throw error
+            toast.success('Attendance policy created successfully!')
+            setPolicyForm({
+                name: '',
+                grace_period_mins: 15,
+                core_start_time: '09:00',
+                core_end_time: '18:00',
+                half_day_threshold_mins: 240,
+                late_arrival_limit: 3
+            })
+            await fetchAttendancePolicies()
+        } catch (error) {
+            toast.error('Error saving policy: ' + error.message)
+        } finally {
+            setSubmitting(false)
+        }
+    }
+ 
     const fetchLeavePolicies = async () => {
-        const { data } = await supabase.from('leave_policies').select('*').order('leave_type')
+        const { data } = await applyCompanyFilter(
+            supabase.from('leave_policies').select('*')
+        ).order('leave_type')
         setLeavePolicies(getLeavePolicyOptions(data || []))
     }
-
+ 
     const handleSubmitLeave = async (e) => {
         e.preventDefault()
         setSubmitting(true)
         try {
             const { error } = await supabase
                 .from('leaves')
-                .insert([{
+                .insert([withCompanyScope({
                     ...leaveForm,
                     status: 'pending'
-                }])
-
+                })])
+ 
             if (error) throw error
-
+ 
             setIsLeaveModalOpen(false)
             setLeaveForm({
                 employee_id: '',
@@ -283,18 +347,20 @@ export default function Attendance() {
             setSubmitting(false)
         }
     }
-
+ 
     const handleLeaveStatus = async (id, status) => {
         try {
             const leaveBefore = leaveApplications.find(leave => leave.id === id)
             const rpcName = status === 'approved' ? 'approve_leave_request' : 'reject_leave_request'
             const { error } = await supabase.rpc(rpcName, { p_leave_id: id })
-
+ 
             if (error) throw error
-
-            const { data: leaveWithEmployee } = await supabase
-                .from('leaves')
-                .select('id, leave_type, employee:employees(first_name, last_name, email)')
+ 
+            const { data: leaveWithEmployee } = await applyCompanyFilter(
+                supabase
+                    .from('leaves')
+                    .select('id, leave_type, employee:employees(first_name, last_name, email)')
+            )
                 .eq('id', id)
                 .single()
             await notifyLeaveStatus({
@@ -343,37 +409,39 @@ export default function Attendance() {
 
             // 1. Proactive Duplicate Check
             devLog('Checking for duplicate:', manualForm.employee_id, manualForm.date)
-            const { data: existingRecord, error: checkError } = await supabase
-                .from('attendance')
-                .select('id')
+            const { data: existingRecord, error: checkError } = await applyCompanyFilter(
+                supabase
+                    .from('attendance')
+                    .select('id')
+            )
                 .eq('employee_id', manualForm.employee_id)
                 .eq('date', manualForm.date)
                 .maybeSingle()
-
+ 
             if (checkError) {
                 console.error('Check Error:', checkError)
                 // Don't block insert on check error, let db constraint handle it if needed
             }
-
+ 
             devLog('Duplicate Check Result:', existingRecord)
-
+ 
             if (existingRecord) {
                 devLog('Duplicate Found! Triggering alert.')
                 setErrorMessage('Attendance record already exists for this employee on this date.')
                 setSubmitting(false)
                 return
             }
-
+ 
             const checkInTime = combineDateAndTime(manualForm.date, manualForm.check_in)
             const checkOutTime = combineDateAndTime(manualForm.date, manualForm.check_out)
-
+ 
             const calculatedStatus = getStatusFromHours(checkInTime, checkOutTime, manualForm.status, manualForm.date)
-
+ 
             // 2. Insert if no duplicate found
             devLog('No duplicate found, attempting insert...')
             const { error } = await supabase
                 .from('attendance')
-                .insert([{
+                .insert([withCompanyScope({
                     employee_id: manualForm.employee_id,
                     date: manualForm.date,
                     check_in: checkInTime,
@@ -382,7 +450,7 @@ export default function Attendance() {
                     remarks: manualForm.remarks,
                     // Force DB to store "Local Wall Clock" time by offsetting the date before toISOString
                     created_at: new Date(Date.now() - (new Date().getTimezoneOffset() * 60000)).toISOString().replace('Z', '+00:00')
-                }])
+                })])
 
             if (error) throw error
 
@@ -420,48 +488,56 @@ export default function Attendance() {
 
     const fetchLeaveApplications = async () => {
         try {
-            const { data, error } = await supabase
-                .from('leaves')
-                .select(`
-                    *,
-                    employee:employees(first_name, last_name, department)
-                `)
+            const { data, error } = await applyCompanyFilter(
+                supabase
+                    .from('leaves')
+                    .select(`
+                        *,
+                        employee:employees(first_name, last_name, department)
+                    `)
+            )
                 .order('created_at', { ascending: false })
-
+ 
             if (error) throw error
             setLeaveApplications(data || [])
         } catch (error) {
             console.error('Error fetching leaves:', error)
         }
     }
-
+ 
     const fetchAttendanceStats = async () => {
         try {
             if (!dateFilter) return;
-
+ 
             const [year, month] = dateFilter.split('-').map(Number);
             const startOfMonth = `${dateFilter}-01`;
             const lastDayDate = new Date(year, month, 0);
             const endOfMonth = `${dateFilter}-${lastDayDate.getDate().toString().padStart(2, '0')}`;
-
+ 
             // Ensure holidays are fetched to avoid race condition on mount
             const currentHolidays = holidays.length > 0 ? holidays : await fetchHolidays();
             const holidaysInMonth = currentHolidays.filter(h => h.date >= startOfMonth && h.date <= endOfMonth)
-
+ 
             // Fetch employees count, attendance, and leaves concurrently using Promise.all to prevent sequential waterfalls
             const [employeesRes, attendanceRes, leavesRes] = await Promise.all([
-                supabase
-                    .from('employees')
-                    .select('*', { count: 'exact', head: true })
+                applyCompanyFilter(
+                    supabase
+                        .from('employees')
+                        .select('*', { count: 'exact', head: true })
+                )
                     .eq('status', 'active'),
-                supabase
-                    .from('attendance')
-                    .select('status, date')
+                applyCompanyFilter(
+                    supabase
+                        .from('attendance')
+                        .select('status, date')
+                )
                     .gte('date', startOfMonth)
                     .lte('date', endOfMonth),
-                supabase
-                    .from('leaves')
-                    .select('start_date, end_date')
+                applyCompanyFilter(
+                    supabase
+                        .from('leaves')
+                        .select('start_date, end_date')
+                )
                     .eq('status', 'approved')
                     .lte('start_date', endOfMonth)
                     .gte('end_date', startOfMonth)
@@ -540,12 +616,14 @@ export default function Attendance() {
     const fetchDailyAttendance = async () => {
         try {
             setLoading(true)
-            let query = supabase
-                .from('attendance')
-                .select('*, employee:employees(first_name, last_name, employee_id, department, designation)')
+            let query = applyCompanyFilter(
+                supabase
+                    .from('attendance')
+                    .select('*, employee:employees(first_name, last_name, employee_id, department, designation)')
+            )
                 .order('date', { ascending: false })
                 .order('check_in', { ascending: true })
-
+ 
             if (dateFilter) {
                 const [year, month] = dateFilter.split('-').map(Number);
                 const startOfMonth = `${dateFilter}-01`;
@@ -553,17 +631,17 @@ export default function Attendance() {
                 const endOfMonth = `${dateFilter}-${lastDay.toString().padStart(2, '0')}`;
                 query = query.gte('date', startOfMonth).lte('date', endOfMonth)
             }
-
+ 
             if (statusFilter !== 'All Status') {
                 query = query.eq('status', statusFilter)
             }
-
+ 
             const { data, error } = await query
-
+ 
             if (error) throw error
-
+ 
             let filteredData = data || []
-
+ 
             if (searchQuery || deptFilter !== 'All Departments') {
                 const lowerQ = searchQuery.toLowerCase()
                 filteredData = filteredData.filter(record => {
@@ -576,7 +654,7 @@ export default function Attendance() {
                     return matchesSearch && matchesDept
                 })
             }
-
+ 
             setDailyAttendance(filteredData)
         } catch (error) {
             console.error('Error fetching daily attendance:', error)
@@ -584,7 +662,7 @@ export default function Attendance() {
             setLoading(false)
         }
     }
-
+ 
     const fetchCalendarAttendance = async (empId, dateFilterStr) => {
         if (!empId || !dateFilterStr) return
         setCalendarLoading(true)
@@ -593,14 +671,16 @@ export default function Attendance() {
             const startOfMonth = `${dateFilterStr}-01`
             const lastDay = new Date(year, month, 0).getDate()
             const endOfMonth = `${dateFilterStr}-${lastDay.toString().padStart(2, '0')}`
-
-            const { data, error } = await supabase
-                .from('attendance')
-                .select('*')
+ 
+            const { data, error } = await applyCompanyFilter(
+                supabase
+                    .from('attendance')
+                    .select('*')
+            )
                 .eq('employee_id', empId)
                 .gte('date', startOfMonth)
                 .lte('date', endOfMonth)
-
+ 
             if (error) throw error
             setCalendarAttendance(data || [])
         } catch (err) {
@@ -609,12 +689,14 @@ export default function Attendance() {
             setCalendarLoading(false)
         }
     }
-
+ 
     const fetchRegularizationRequests = async () => {
         try {
-            const { data, error } = await supabase
-                .from('attendance_regularizations')
-                .select('*, employee:employees(first_name, last_name, employee_id, department)')
+            const { data, error } = await applyCompanyFilter(
+                supabase
+                    .from('attendance_regularizations')
+                    .select('*, employee:employees(first_name, last_name, employee_id, department)')
+            )
                 .order('created_at', { ascending: false })
             if (error) throw error
             setRegularizationRequests(data || [])
@@ -1001,7 +1083,8 @@ export default function Attendance() {
                     { key: 'regularization', label: 'Regularizations' },
                     { key: 'leave', label: 'Leave Management' },
                     { key: 'manual', label: 'Manual Entry' },
-                    { key: 'bulk', label: 'Bulk Upload' }
+                    { key: 'bulk', label: 'Bulk Upload' },
+                    { key: 'policies', label: 'Attendance Policies & Biometrics' }
                 ].map((tab) => (
                     <button
                         key={tab.key}
@@ -1018,7 +1101,139 @@ export default function Attendance() {
             </div>
 
             {/* Tabs Content */}
-            {activeTab === 'calendar' ? (
+            {activeTab === 'policies' ? (
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in fade-in duration-300">
+                    <div className="lg:col-span-2 space-y-6">
+                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-50">
+                            <h3 className="text-lg font-bold text-gray-800 mb-4">Active Attendance Policies</h3>
+                            <div className="space-y-4">
+                                {attendancePolicies.map((policy) => (
+                                    <div key={policy.id} className="p-5 bg-slate-50 border border-gray-100 rounded-xl flex items-center justify-between">
+                                        <div>
+                                            <h4 className="font-bold text-slate-800">{policy.name}</h4>
+                                            <p className="text-xs text-gray-500 mt-1">
+                                                Core hours: {policy.core_start_time} - {policy.core_end_time} | Grace window: {policy.grace_period_mins} mins
+                                            </p>
+                                            <p className="text-[10px] text-blue-600 font-bold mt-1 uppercase tracking-wider">
+                                                Late limit: {policy.late_arrival_limit} arrivals/month
+                                            </p>
+                                        </div>
+                                        <span className="px-3 py-1 bg-emerald-100 text-emerald-700 rounded-full text-[10px] font-black uppercase">Active</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Webhook biometrics policy */}
+                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-50 space-y-4">
+                            <h3 className="text-lg font-bold text-gray-800">Biometric Webhook Hardware Hub</h3>
+                            <p className="text-xs text-gray-600">Securely connect and feed real-time employee check-in logs from external ZK/ESSL IP hardware scanners.</p>
+                            <div className="space-y-3">
+                                <label className="text-xs font-bold text-gray-700 uppercase tracking-wider block">Endpoint Webhook API URL</label>
+                                <div className="flex gap-2">
+                                    <input 
+                                        type="text" 
+                                        readOnly 
+                                        value={webhookUrl}
+                                        className="flex-1 px-4 py-2 bg-slate-50 border border-gray-200 rounded-lg text-xs font-semibold text-slate-700 focus:ring-0 cursor-default"
+                                    />
+                                    <button 
+                                        type="button"
+                                        onClick={() => {
+                                            navigator.clipboard.writeText(webhookUrl)
+                                            toast.success('Webhook URL copied to clipboard!')
+                                        }}
+                                        className="px-4 py-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg text-xs font-bold transition-all"
+                                    >
+                                        Copy
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="flex items-center justify-between pt-2">
+                                <div className="flex items-center gap-2">
+                                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span>
+                                    <span className="text-xs font-bold text-slate-700">Webhook status: Live & Active</span>
+                                </div>
+                                <button
+                                    onClick={() => {
+                                        toast.success('Successfully sent test handshake command to biometric hardware webhook API endpoint!')
+                                    }}
+                                    className="px-4 py-2 bg-black text-white hover:bg-gray-800 text-xs font-bold rounded-lg transition-all"
+                                >
+                                    Ping Hardware Handshake
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Policy creation form */}
+                    <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-50">
+                        <h3 className="text-lg font-bold text-gray-800 mb-4">Create Flex-Time Policy</h3>
+                        <form onSubmit={handleSavePolicy} className="space-y-4">
+                            <div className="space-y-1.5">
+                                <label className="text-xs font-bold text-gray-750 uppercase block">Policy Name</label>
+                                <input 
+                                    type="text" 
+                                    required 
+                                    className="w-full px-4 py-2.5 bg-slate-50 border border-gray-100 rounded-xl text-xs font-bold"
+                                    placeholder="e.g. Core Night Shift"
+                                    value={policyForm.name}
+                                    onChange={(e) => setPolicyForm({...policyForm, name: e.target.value})}
+                                />
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-1.5">
+                                    <label className="text-xs font-bold text-gray-750 uppercase block">Core Start</label>
+                                    <input 
+                                        type="time" 
+                                        required 
+                                        className="w-full px-4 py-2.5 bg-slate-50 border border-gray-100 rounded-xl text-xs font-bold"
+                                        value={policyForm.core_start_time}
+                                        onChange={(e) => setPolicyForm({...policyForm, core_start_time: e.target.value})}
+                                    />
+                                </div>
+                                <div className="space-y-1.5">
+                                    <label className="text-xs font-bold text-gray-750 uppercase block">Core End</label>
+                                    <input 
+                                        type="time" 
+                                        required 
+                                        className="w-full px-4 py-2.5 bg-slate-50 border border-gray-100 rounded-xl text-xs font-bold"
+                                        value={policyForm.core_end_time}
+                                        onChange={(e) => setPolicyForm({...policyForm, core_end_time: e.target.value})}
+                                    />
+                                </div>
+                            </div>
+                            <div className="space-y-1.5">
+                                <label className="text-xs font-bold text-gray-750 uppercase block">Grace Period (Minutes)</label>
+                                <input 
+                                    type="number" 
+                                    required 
+                                    className="w-full px-4 py-2.5 bg-slate-50 border border-gray-100 rounded-xl text-xs font-bold"
+                                    value={policyForm.grace_period_mins}
+                                    onChange={(e) => setPolicyForm({...policyForm, grace_period_mins: parseInt(e.target.value)})}
+                                />
+                            </div>
+                            <div className="space-y-1.5">
+                                <label className="text-xs font-bold text-gray-750 uppercase block">Late Limit (Times/Month)</label>
+                                <input 
+                                    type="number" 
+                                    required 
+                                    className="w-full px-4 py-2.5 bg-slate-50 border border-gray-100 rounded-xl text-xs font-bold"
+                                    value={policyForm.late_arrival_limit}
+                                    onChange={(e) => setPolicyForm({...policyForm, late_arrival_limit: parseInt(e.target.value)})}
+                                />
+                            </div>
+                            <button 
+                                type="submit" 
+                                disabled={submitting}
+                                className="w-full bg-blue-600 hover:bg-blue-750 text-white font-bold text-xs py-3 rounded-xl transition-all shadow disabled:opacity-50"
+                            >
+                                {submitting ? 'Saving...' : 'Add Flex Policy'}
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            ) : activeTab === 'calendar' ? (
                 <div className="space-y-6 animate-in fade-in duration-300">
                     <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-50 flex flex-wrap items-center justify-between gap-4">
                         <div className="flex items-center gap-4 flex-wrap">

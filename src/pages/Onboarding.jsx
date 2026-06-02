@@ -1,9 +1,17 @@
-import { useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
+import { useState, useMemo, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
-import { CheckCircle2, Circle, Clock, Plus, Trash2, UserPlus, CheckSquare, Briefcase, Info, Search, ShieldCheck } from 'lucide-react'
+import { CheckCircle2, Circle, Clock, Plus, Trash2, UserPlus, CheckSquare, Search, X, ChevronDown, Check } from 'lucide-react'
 import { TableSkeleton } from '../components/ui/SkeletonLoader'
+import { useEmployees } from '../hooks/useEmployees'
+import { useFocusTrap } from '../hooks/useFocusTrap'
+import {
+    useOnboardingChecklist,
+    useCreateOnboardingTasks,
+    useToggleTaskStatus,
+    useDeleteOnboardingTask
+} from '../hooks/useOnboardingData'
+import { logger } from '../lib/devLogger'
 
 const DEFAULT_TASKS = [
     { task_name: 'Collect Aadhaar, PAN, Bank Details', category: 'HR', days: 2 },
@@ -15,13 +23,107 @@ const DEFAULT_TASKS = [
     { task_name: 'Introduce to Reporting Manager', category: 'General', days: 1 }
 ]
 
+const STANDARD_ROLES = [
+    'HR Specialist',
+    'HR Manager',
+    'HR Team',
+    'IT Admin',
+    'IT Support',
+    'Facilities Coordinator',
+    'Reporting Manager',
+    'Finance Specialist',
+    'Office Admin'
+]
+
+function EmployeeCombobox({ employees, selectedId, onChange }) {
+    const [isOpen, setIsOpen] = useState(false)
+    const [search, setSearch] = useState('')
+
+    // Close on click outside
+    useEffect(() => {
+        const handleClickOutside = (event) => {
+            if (!event.target.closest('.employee-combobox')) {
+                setIsOpen(false)
+            }
+        }
+        document.addEventListener('mousedown', handleClickOutside)
+        return () => document.removeEventListener('mousedown', handleClickOutside)
+    }, [])
+
+    const filtered = employees.filter(emp =>
+        emp.first_name.toLowerCase().includes(search.toLowerCase()) ||
+        emp.last_name.toLowerCase().includes(search.toLowerCase()) ||
+        emp.employee_id.toLowerCase().includes(search.toLowerCase())
+    )
+
+    const selectedEmp = employees.find(e => e.id === selectedId)
+
+    return (
+        <div className="relative employee-combobox min-w-[280px]">
+            <div
+                onClick={() => setIsOpen(!isOpen)}
+                className="flex items-center justify-between w-full bg-white px-4 py-2.5 rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:bg-slate-50 transition-colors"
+            >
+                <div className="flex flex-col items-start overflow-hidden text-left">
+                    <span className="text-[9px] uppercase tracking-[0.12em] font-bold text-slate-400">New Hire</span>
+                    <span className="text-sm font-bold text-slate-800 truncate w-full leading-tight">
+                        {selectedEmp ? `${selectedEmp.first_name} ${selectedEmp.last_name} (${selectedEmp.employee_id})` : 'Select New Hire'}
+                    </span>
+                </div>
+                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform shrink-0 ml-2 ${isOpen ? 'rotate-180' : ''}`} />
+            </div>
+
+            {isOpen && (
+                <div className="absolute top-full right-0 mt-2 w-80 bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-200">
+                    <div className="p-2 border-b border-slate-100 bg-slate-50/50">
+                        <div className="relative">
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                            <input
+                                autoFocus
+                                type="text"
+                                placeholder="Search by name or ID..."
+                                className="w-full pl-9 pr-3 py-1.5 text-xs bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none font-medium text-slate-700"
+                                value={search}
+                                onChange={(e) => setSearch(e.target.value)}
+                                onClick={(e) => e.stopPropagation()}
+                            />
+                        </div>
+                    </div>
+                    <div className="max-h-60 overflow-y-auto p-1">
+                        {filtered.length > 0 ? (
+                            filtered.map(emp => (
+                                <div
+                                    key={emp.id}
+                                    onClick={() => {
+                                        onChange(emp.id)
+                                        setIsOpen(false)
+                                        setSearch('')
+                                    }}
+                                    className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors ${selectedId === emp.id ? 'bg-indigo-50 text-indigo-700 font-bold' : 'hover:bg-slate-50 text-slate-700'}`}
+                                >
+                                    <div className="text-left">
+                                        <p className="text-xs font-bold text-slate-800">{emp.first_name} {emp.last_name}</p>
+                                        <p className="text-[10px] text-slate-500 mt-0.5">{emp.employee_id} • {emp.designation || 'Employee'}</p>
+                                    </div>
+                                    {selectedId === emp.id && <Check className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                                </div>
+                            ))
+                        ) : (
+                            <div className="px-4 py-6 text-center text-xs text-slate-400 italic">
+                                No employees found
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
+    )
+}
+
 export default function Onboarding() {
     const toast = useToast()
     const { isAdmin } = useAuth()
-    const [employees, setEmployees] = useState([])
-    const [checklists, setChecklists] = useState([])
     const [selectedEmployee, setSelectedEmployee] = useState('')
-    const [loading, setLoading] = useState(true)
     const [submitting, setSubmitting] = useState(false)
     const [searchTerm, setSearchTerm] = useState('')
     const [selectedCategory, setSelectedCategory] = useState('All')
@@ -35,61 +137,86 @@ export default function Onboarding() {
         assigned_to: ''
     })
 
+    const [showRolesDropdown, setShowRolesDropdown] = useState(false)
+    const [activeRoleIndex, setActiveRoleIndex] = useState(-1)
+
+    const filteredRoles = useMemo(() => {
+        const query = taskForm.assigned_to.trim().toLowerCase()
+        if (!query) return STANDARD_ROLES
+        return STANDARD_ROLES.filter(role => role.toLowerCase().includes(query))
+    }, [taskForm.assigned_to])
+
     useEffect(() => {
-        fetchInitialData()
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [])
+        setActiveRoleIndex(-1)
+    }, [filteredRoles])
 
-    const fetchInitialData = async () => {
-        try {
-            setLoading(true)
-            // 1. Fetch active employees
-            const { data: emps, error: empError } = await supabase
-                .from('employees')
-                .select('id, first_name, last_name, employee_id, designation, department, joining_date')
-                .eq('status', 'active')
-                .order('joining_date', { ascending: false })
-
-            if (empError) throw empError
-            setEmployees(emps || [])
-
-            if (emps && emps.length > 0) {
-                setSelectedEmployee(emps[0].id)
-                await fetchChecklist(emps[0].id)
-            } else {
-                setLoading(false)
+    const handleAssignedToKeyDown = (e) => {
+        if (!showRolesDropdown) {
+            if (e.key === 'ArrowDown') {
+                setShowRolesDropdown(true)
+                e.preventDefault()
             }
-        } catch (error) {
-            console.error('Error fetching initial onboarding data:', error)
-            toast.error('Failed to load onboarding list.')
-            setLoading(false)
+            return
+        }
+
+        switch (e.key) {
+            case 'ArrowDown':
+                e.preventDefault()
+                setActiveRoleIndex(prev => (prev + 1) % filteredRoles.length)
+                break
+            case 'ArrowUp':
+                e.preventDefault()
+                setActiveRoleIndex(prev => (prev - 1 + filteredRoles.length) % filteredRoles.length)
+                break
+            case 'Enter':
+                if (activeRoleIndex >= 0 && activeRoleIndex < filteredRoles.length) {
+                    e.preventDefault()
+                    setTaskForm(prev => ({ ...prev, assigned_to: filteredRoles[activeRoleIndex] }))
+                    setShowRolesDropdown(false)
+                }
+                break
+            case 'Escape':
+                e.preventDefault()
+                setShowRolesDropdown(false)
+                break
+            default:
+                break
         }
     }
 
-    const fetchChecklist = async (employeeId) => {
-        try {
-            setLoading(true)
-            const { data, error } = await supabase
-                .from('onboarding_checklists')
-                .select('*')
-                .eq('employee_id', employeeId)
-                .order('created_at', { ascending: true })
+    const taskModalRef = useFocusTrap(showAddTaskModal)
 
-            if (error) throw error
-            setChecklists(data || [])
-        } catch (error) {
-            console.error('Error fetching checklist:', error)
-            toast.error('Failed to load employee onboarding checklist.')
-        } finally {
-            setLoading(false)
+    useEffect(() => {
+        const handleEscape = (e) => {
+            if (e.key === 'Escape') setShowAddTaskModal(false)
         }
-    }
+        if (showAddTaskModal) document.addEventListener('keydown', handleEscape)
+        return () => document.removeEventListener('keydown', handleEscape)
+    }, [showAddTaskModal])
 
-    const handleEmployeeChange = async (e) => {
-        const empId = e.target.value
-        setSelectedEmployee(empId)
-        await fetchChecklist(empId)
-    }
+    // React Query hooks
+    const { data: employeesResponse, isLoading: loadingEmployees } = useEmployees({ page: 0, pageSize: 1000 })
+    const allEmployees = useMemo(() => {
+        return Array.isArray(employeesResponse) ? employeesResponse : employeesResponse?.data || []
+    }, [employeesResponse])
+    const employees = useMemo(
+        () => allEmployees.filter(e => e.status === 'active').sort((a, b) => new Date(b.joining_date) - new Date(a.joining_date)),
+        [allEmployees]
+    )
+
+    // Initialize default selected employee once employees load
+    useEffect(() => {
+        if (employees.length > 0 && !selectedEmployee) {
+            setSelectedEmployee(employees[0].id)
+        }
+    }, [employees, selectedEmployee])
+
+    const { data: checklists = [], isLoading: loadingChecklist } = useOnboardingChecklist(selectedEmployee)
+    const createTasksMutation = useCreateOnboardingTasks()
+    const toggleStatusMutation = useToggleTaskStatus()
+    const deleteTaskMutation = useDeleteOnboardingTask()
+
+    const loading = loadingEmployees || loadingChecklist
 
     // Initialize Default Onboarding Checklist
     const initializeDefaultChecklist = async () => {
@@ -102,7 +229,6 @@ export default function Onboarding() {
             const payload = DEFAULT_TASKS.map(task => {
                 const dueDate = new Date(joining)
                 dueDate.setDate(dueDate.getDate() + task.days)
-
                 return {
                     employee_id: selectedEmployee,
                     task_name: task.task_name,
@@ -113,16 +239,10 @@ export default function Onboarding() {
                 }
             })
 
-            const { error } = await supabase
-                .from('onboarding_checklists')
-                .insert(payload)
-
-            if (error) throw error
-
+            await createTasksMutation.mutateAsync(payload)
             toast.success('Initialized default onboarding checklist!')
-            await fetchChecklist(selectedEmployee)
         } catch (error) {
-            console.error('Error initializing checklist:', error)
+            logger.error('Error initializing checklist:', error)
             toast.error('Failed to initialize default onboarding tasks.')
         } finally {
             setSubmitting(false)
@@ -130,40 +250,20 @@ export default function Onboarding() {
     }
 
     // Toggle Task Status
-    const toggleTaskStatus = async (task) => {
+    const toggleTaskStatus = (task) => {
         const nextStatus = task.status === 'completed' ? 'pending' : 'completed'
-        try {
-            const { error } = await supabase
-                .from('onboarding_checklists')
-                .update({ status: nextStatus, updated_at: new Date().toISOString() })
-                .eq('id', task.id)
-
-            if (error) throw error
-            toast.success(`Task marked as ${nextStatus}`)
-            
-            // Local state update for immediate feedback
-            setChecklists(prev => prev.map(t => t.id === task.id ? { ...t, status: nextStatus } : t))
-        } catch (error) {
-            console.error('Error updating task status:', error)
-            toast.error('Failed to update task status.')
-        }
+        toggleStatusMutation.mutate({ id: task.id, status: nextStatus }, {
+            onSuccess: () => toast.success(`Task marked as ${nextStatus}`),
+            onError: (err) => toast.error(err.message || 'Failed to update task status.')
+        })
     }
 
     // Delete Task
-    const deleteTask = async (taskId) => {
-        try {
-            const { error } = await supabase
-                .from('onboarding_checklists')
-                .delete()
-                .eq('id', taskId)
-
-            if (error) throw error
-            toast.success('Task removed from checklist.')
-            setChecklists(prev => prev.filter(t => t.id !== taskId))
-        } catch (error) {
-            console.error('Error deleting task:', error)
-            toast.error('Failed to remove onboarding task.')
-        }
+    const deleteTask = (taskId) => {
+        deleteTaskMutation.mutate(taskId, {
+            onSuccess: () => toast.success('Task removed from checklist.'),
+            onError: (err) => toast.error(err.message || 'Failed to remove onboarding task.')
+        })
     }
 
     // Create New Custom Task
@@ -186,23 +286,12 @@ export default function Onboarding() {
                 assigned_to: taskForm.assigned_to || 'HR Team'
             }
 
-            const { error } = await supabase
-                .from('onboarding_checklists')
-                .insert([payload])
-
-            if (error) throw error
-
+            await createTasksMutation.mutateAsync([payload])
             toast.success('Onboarding task added successfully.')
             setShowAddTaskModal(false)
-            setTaskForm({
-                task_name: '',
-                category: 'HR',
-                due_days: 3,
-                assigned_to: ''
-            })
-            await fetchChecklist(selectedEmployee)
+            setTaskForm({ task_name: '', category: 'HR', due_days: 3, assigned_to: '' })
         } catch (error) {
-            console.error('Error creating task:', error)
+            logger.error('Error creating task:', error)
             toast.error('Failed to create custom task.')
         } finally {
             setSubmitting(false)
@@ -233,18 +322,12 @@ export default function Onboarding() {
                 
                 {/* Employee Selector */}
                 <div className="flex items-center gap-3">
-                    <label className="text-xs font-bold text-gray-600 uppercase tracking-wider">Select New Hire</label>
-                    <select
-                        value={selectedEmployee}
-                        onChange={handleEmployeeChange}
-                        className="border border-gray-200 rounded-xl px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-50 focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all min-w-[240px]"
-                    >
-                        {employees.map(emp => (
-                            <option key={emp.id} value={emp.id}>
-                                {emp.first_name} {emp.last_name} ({emp.employee_id})
-                            </option>
-                        ))}
-                    </select>
+                    <label className="text-xs font-bold text-gray-650 uppercase tracking-wider">Select New Hire</label>
+                    <EmployeeCombobox
+                        employees={employees}
+                        selectedId={selectedEmployee}
+                        onChange={setSelectedEmployee}
+                    />
                 </div>
             </div>
 
@@ -344,7 +427,7 @@ export default function Onboarding() {
                             <div className="flex flex-col items-center justify-center p-16 text-center">
                                 <CheckSquare className="w-12 h-12 text-gray-300 mb-3" />
                                 <h3 className="text-base font-bold text-gray-700">No onboarding tasks found</h3>
-                                <p className="text-xs text-gray-400 mt-1">
+                                <p className="text-xs text-gray-600 mt-1">
                                     {totalTasks === 0
                                         ? 'Checklist is empty. Initialize the default schedule above to get started!'
                                         : 'No tasks match your selected search or filter criteria.'}
@@ -382,7 +465,7 @@ export default function Onboarding() {
                                                     </button>
                                                 </td>
                                                 <td className="p-4">
-                                                    <p className={`font-bold text-sm ${isCompleted ? 'text-gray-400 line-through' : 'text-gray-800'}`}>
+                                                    <p className={`font-bold text-sm ${isCompleted ? 'text-gray-600 line-through' : 'text-gray-800'}`}>
                                                         {task.task_name}
                                                     </p>
                                                     {isOverdue && (
@@ -411,7 +494,7 @@ export default function Onboarding() {
                                                     <td className="p-4 text-right">
                                                         <button
                                                             onClick={() => deleteTask(task.id)}
-                                                            className="p-1.5 text-gray-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                                                            className="p-1.5 text-gray-600 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
                                                         >
                                                             <Trash2 className="w-4 h-4" />
                                                         </button>
@@ -430,20 +513,31 @@ export default function Onboarding() {
             {/* Custom Task Addition Modal */}
             {showAddTaskModal && (
                 <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-3xl shadow-xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
-                        <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+                    <div
+                        ref={taskModalRef}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="onboarding-modal-title"
+                        className="bg-white rounded-3xl shadow-xl w-full max-w-md animate-in zoom-in-95 duration-200"
+                    >
+                        <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50/50 rounded-t-3xl">
                             <div>
-                                <h3 className="text-lg font-bold text-gray-900">Add Custom Onboarding Task</h3>
+                                <h3 id="onboarding-modal-title" className="text-lg font-bold text-gray-900">Add Custom Onboarding Task</h3>
                                 <p className="text-xs text-gray-500 mt-0.5">Define a setup step for {currentEmployee?.first_name}</p>
                             </div>
-                            <button onClick={() => setShowAddTaskModal(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
-                                <X className="w-5 h-5 text-gray-400" />
+                            <button
+                                onClick={() => setShowAddTaskModal(false)}
+                                aria-label="Close modal"
+                                className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                            >
+                                <X aria-hidden="true" className="w-5 h-5 text-gray-400" />
                             </button>
                         </div>
                         <form onSubmit={handleCreateTask} className="p-6 space-y-4">
                             <div>
-                                <label className="block text-xs font-bold text-gray-700 mb-1.5">Task Description*</label>
+                                <label htmlFor="task-name" className="block text-xs font-bold text-gray-700 mb-1.5">Task Description*</label>
                                 <textarea
+                                    id="task-name"
                                     required
                                     value={taskForm.task_name}
                                     onChange={(e) => setTaskForm(prev => ({ ...prev, task_name: e.target.value }))}
@@ -453,8 +547,9 @@ export default function Onboarding() {
                             </div>
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
-                                    <label className="block text-xs font-bold text-gray-700 mb-1.5">Category</label>
+                                    <label htmlFor="task-category" className="block text-xs font-bold text-gray-700 mb-1.5">Category</label>
                                     <select
+                                        id="task-category"
                                         value={taskForm.category}
                                         onChange={(e) => setTaskForm(prev => ({ ...prev, category: e.target.value }))}
                                         className="w-full text-xs border border-gray-200 rounded-xl bg-gray-50 p-2.5"
@@ -467,8 +562,9 @@ export default function Onboarding() {
                                     </select>
                                 </div>
                                 <div>
-                                    <label className="block text-xs font-bold text-gray-700 mb-1.5">Due Days (from Joining)</label>
+                                    <label htmlFor="task-due-days" className="block text-xs font-bold text-gray-700 mb-1.5">Due Days (from Joining)</label>
                                     <input
+                                        id="task-due-days"
                                         type="number"
                                         min="1"
                                         required
@@ -478,17 +574,50 @@ export default function Onboarding() {
                                     />
                                 </div>
                             </div>
-                            <div>
-                                <label className="block text-xs font-bold text-gray-700 mb-1.5">Assigned To</label>
+                            <div className="relative">
+                                <label htmlFor="task-assigned-to" className="block text-xs font-bold text-gray-700 mb-1.5">Assigned To</label>
                                 <input
+                                    id="task-assigned-to"
                                     type="text"
                                     value={taskForm.assigned_to}
-                                    onChange={(e) => setTaskForm(prev => ({ ...prev, assigned_to: e.target.value }))}
+                                    onChange={(e) => {
+                                        setTaskForm(prev => ({ ...prev, assigned_to: e.target.value }))
+                                        setShowRolesDropdown(true)
+                                    }}
+                                    onFocus={() => setShowRolesDropdown(true)}
+                                    onBlur={() => setTimeout(() => setShowRolesDropdown(false), 200)}
+                                    onKeyDown={handleAssignedToKeyDown}
                                     placeholder="e.g. IT Administrator, HR Lead"
-                                    className="w-full text-xs border border-gray-200 rounded-xl bg-gray-50 p-2.5 font-bold"
+                                    className="w-full text-xs border border-gray-200 rounded-xl bg-gray-50 p-2.5 font-bold focus:outline-none focus:border-indigo-400 focus:bg-white transition-all"
+                                    autoComplete="off"
                                 />
+                                {showRolesDropdown && (
+                                    <div className="absolute left-0 right-0 mt-1 bg-white border border-gray-150 rounded-xl shadow-lg z-50 max-h-40 overflow-y-auto divide-y divide-gray-50">
+                                        {filteredRoles.length > 0 ? (
+                                            filteredRoles.map((role, idx) => (
+                                                <button
+                                                    key={role}
+                                                    type="button"
+                                                    onMouseDown={() => {
+                                                        setTaskForm(prev => ({ ...prev, assigned_to: role }))
+                                                        setShowRolesDropdown(false)
+                                                    }}
+                                                    className={`w-full text-left px-4 py-2 text-xs font-semibold hover:bg-slate-50 transition-colors ${
+                                                        idx === activeRoleIndex ? 'bg-indigo-50 text-indigo-900' : 'text-gray-700'
+                                                    }`}
+                                                >
+                                                    {role}
+                                                </button>
+                                            ))
+                                        ) : (
+                                            <div className="px-4 py-2 text-xs text-gray-500 italic">
+                                                Press enter or continue typing...
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
                             </div>
-                            <div className="pt-4 flex justify-end gap-2 border-t border-gray-100 bg-gray-50/50 -mx-6 -mb-6 p-6">
+                            <div className="pt-4 flex justify-end gap-2 border-t border-gray-100 bg-gray-50/50 -mx-6 -mb-6 p-6 rounded-b-3xl">
                                 <button
                                     type="button"
                                     onClick={() => setShowAddTaskModal(false)}

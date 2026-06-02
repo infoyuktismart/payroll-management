@@ -2,9 +2,11 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { format } from 'date-fns'
-import { Plus, DollarSign } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import Modal from '../components/ui/Modal'
 import { useToast } from '../context/ToastContext'
+import { logger } from '../lib/devLogger'
+import { applyCompanyFilter, withCompanyScope } from '../services/tenantScope'
 
 export default function Salaries() {
     const { user, isAdmin } = useAuth()
@@ -30,45 +32,47 @@ export default function Salaries() {
             try {
                 setLoading(true)
                 // 1. Fetch current employee profile
-                const { data: emp, error: empErr } = await supabase
-                    .from('employees')
-                    .select('*')
+                const { data: emp, error: empErr } = await applyCompanyFilter(
+                    supabase
+                        .from('employees')
+                        .select('*')
+                )
                     .eq('email', user.email)
                     .single()
                 
                 if (empErr && empErr.code !== 'PGRST116') throw empErr
                 setCurrentEmployee(emp)
-
+ 
                 // 2. Fetch employee list and salaries in parallel
                 const promises = []
-
+ 
                 if (isAdmin) {
-                    promises.push(supabase.from('employees').select('id, first_name, last_name, basic_salary'))
+                    promises.push(applyCompanyFilter(supabase.from('employees').select('id, first_name, last_name, basic_salary')))
                 } else {
                     promises.push(Promise.resolve({ data: null }))
                 }
-
-                let salariesQuery = supabase.from('salaries').select('*').order('month', { ascending: false })
+ 
+                let salariesQuery = applyCompanyFilter(supabase.from('salaries').select('*')).order('month', { ascending: false })
                 if (!isAdmin && emp) {
                     salariesQuery = salariesQuery.eq('employee_id', emp.id)
                 }
                 promises.push(salariesQuery)
-
+ 
                 const [empsRes, salariesRes] = await Promise.all(promises)
-
+ 
                 if (isAdmin && empsRes.data) {
                     setEmployees(empsRes.data)
                     const map = {}
                     empsRes.data.forEach(e => map[e.id] = `${e.first_name} ${e.last_name}`)
                     setEmployeeMap(map)
                 }
-
+ 
                 if (salariesRes.data) {
                     setSalaries(salariesRes.data)
                 }
-
+ 
             } catch (error) {
-                console.error("Error loading salaries data:", error)
+                logger.error("Error loading salaries data:", error)
             } finally {
                 setLoading(false)
             }
@@ -79,7 +83,7 @@ export default function Salaries() {
 
     const fetchSalaries = async () => {
         try {
-            let query = supabase.from('salaries').select('*').order('month', { ascending: false })
+            let query = applyCompanyFilter(supabase.from('salaries').select('*')).order('month', { ascending: false })
             if (!isAdmin && currentEmployee) {
                 query = query.eq('employee_id', currentEmployee.id)
             }
@@ -87,7 +91,7 @@ export default function Salaries() {
             if (error) throw error
             setSalaries(data)
         } catch (error) {
-            console.error('Error fetching salaries:', error)
+            logger.error('Error fetching salaries:', error)
         }
     }
 
@@ -104,7 +108,7 @@ export default function Salaries() {
     const handleCreate = async (e) => {
         e.preventDefault()
         try {
-            const { error } = await supabase.from('salaries').insert([formData])
+            const { error } = await supabase.from('salaries').insert([withCompanyScope(formData)])
 
             if (error) throw error
             setIsModalOpen(false)
@@ -153,7 +157,13 @@ export default function Salaries() {
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-200">
                             {loading ? (
-                                <tr><td colSpan="7" className="text-center py-4">Loading...</td></tr>
+                                <tr>
+                                    <td colSpan="7" className="text-center py-4 text-gray-500">
+                                        <div role="status" aria-live="polite" aria-label="Loading salaries">
+                                            <span>Loading...</span>
+                                        </div>
+                                    </td>
+                                </tr>
                             ) : salaries.length === 0 ? (
                                 <tr><td colSpan="7" className="text-center py-4">No salary records found</td></tr>
                             ) : (
@@ -165,10 +175,11 @@ export default function Salaries() {
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                             {format(new Date(salary.month), 'MMMM yyyy')}
                                         </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${salary.basic_salary}</td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-green-600">+${salary.allowances}</td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-red-600">-${salary.deductions}</td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-900">${salary.basic_salary + salary.allowances - salary.deductions}</td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">₹{Number(salary.basic_salary).toLocaleString('en-IN')}</td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-green-600">+₹{Number(salary.allowances).toLocaleString('en-IN')}</td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-red-600">-₹{Number(salary.deductions).toLocaleString('en-IN')}</td>
+                                        {/* net_salary is a GENERATED ALWAYS column in DB — read directly, never recompute */}
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-900">₹{Number(salary.net_salary).toLocaleString('en-IN')}</td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                             {salary.payment_date ? format(new Date(salary.payment_date), 'MMM d, yyyy') : '-'}
                                         </td>
@@ -246,9 +257,9 @@ export default function Salaries() {
                         <div className="bg-gray-50 p-3 rounded-md">
                             <div className="flex justify-between items-center text-sm font-medium">
                                 <span>Net Salary:</span>
-                                <span className="text-lg font-bold text-gray-900">
-                                    ${(parseFloat(formData.basic_salary) || 0) + (parseFloat(formData.allowances) || 0) - (parseFloat(formData.deductions) || 0)}
-                                </span>
+                                {/* Net salary is computed by the DB GENERATED ALWAYS column upon save.
+                                    No client-side arithmetic — value will be shown after refresh. */}
+                                <span className="text-sm text-gray-500 italic">Calculated by database engine on save</span>
                             </div>
                         </div>
 

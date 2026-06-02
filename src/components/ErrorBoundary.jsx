@@ -1,4 +1,5 @@
 import React from 'react'
+import { logger } from '../lib/devLogger'
 
 /**
  * ErrorBoundary — catches unhandled JS errors in the component tree
@@ -16,7 +17,7 @@ export default class ErrorBoundary extends React.Component {
 
     componentDidCatch(error, errorInfo) {
         this.setState({ errorInfo })
-        console.error('ErrorBoundary caught an error:', error, errorInfo)
+        logger.error('ErrorBoundary caught an error:', error, errorInfo)
     }
 
     handleReset = () => {

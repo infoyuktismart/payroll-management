@@ -11,17 +11,20 @@
 
 import jsPDF from 'jspdf'
 import { calculateAnnualTax, TAX_REGIMES } from './taxUtils'
-import { formatCurrency } from './payrollUtils'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const toNum = (v) => Math.max(0, Number(v) || 0)
 
+const formatPDFCurrency = (value) => {
+    return 'Rs. ' + Math.round(toNum(value)).toLocaleString('en-IN')
+}
+
 const addLine = (doc, label, value, x1, x2, y, bold = false) => {
     if (bold) doc.setFont('helvetica', 'bold')
     doc.text(label, x1, y)
     doc.setFont('helvetica', 'normal')
-    doc.text(formatCurrency(value), x2, y, { align: 'right' })
+    doc.text(formatPDFCurrency(value), x2, y, { align: 'right' })
 }
 
 const drawHRule = (doc, y, x1 = 15, x2 = 195) => {
@@ -176,9 +179,12 @@ export const generateForm16PDF = ({
         y += 5.5
     })
 
+    y += 2
     drawHRule(doc, y)
-    y += 1.5
+    y += 5.5
     addLine(doc, 'Total Gross Salary (1)', annualGross, lm, rm, y, true)
+    y += 1.5
+    drawHRule(doc, y)
     y += 8
 
     // ── Deductions ────────────────────────────────────────────────────────────
@@ -202,16 +208,19 @@ export const generateForm16PDF = ({
         y += 5.5
     }
 
+    y += 2
     drawHRule(doc, y)
-    y += 1.5
+    y += 5.5
     addLine(doc, 'Total Deductions (2)', taxResult.allowedDeductions, lm, rm, y, true)
+    y += 1.5
+    drawHRule(doc, y)
     y += 8
 
     // ── Taxable Income ────────────────────────────────────────────────────────
     y = sectionTitle(doc, '3. INCOME CHARGEABLE UNDER "SALARIES"', y)
     y += 1.5
     doc.setFontSize(8.5)
-    addLine(doc, 'Taxable Income [1 − 2]', taxResult.taxableIncome, lm, rm, y, true)
+    addLine(doc, 'Taxable Income [1 - 2]', taxResult.taxableIncome, lm, rm, y, true)
     y += 8
 
     // ── Tax Computation ───────────────────────────────────────────────────────
@@ -230,10 +239,13 @@ export const generateForm16PDF = ({
         y += 5.5
     })
 
+    y += 2
     drawHRule(doc, y)
-    y += 1.5
+    y += 5.5
     addLine(doc, 'Total Tax Payable (4)', taxResult.totalTax, lm, rm, y, true)
-    y += 6
+    y += 1.5
+    drawHRule(doc, y)
+    y += 8
 
     // ── Verification ──────────────────────────────────────────────────────────
     y = sectionTitle(doc, '5. RELIEF & TDS DEDUCTED', y)

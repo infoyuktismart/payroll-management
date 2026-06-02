@@ -1,47 +1,23 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Check, X, Calculator, Search } from 'lucide-react'
-import { supabase } from '../lib/supabase'
 import { calculateAnnualTax, getIndianFinancialYear } from '../lib/taxUtils'
 import { formatCurrency } from '../lib/payrollUtils'
+import { useTaxDeclarations, useReviewDeclaration } from '../hooks/useTaxDeclarations'
+import { useToast } from '../context/ToastContext'
 
 export default function TaxDeclarations() {
-    const [declarations, setDeclarations] = useState([])
-    const [loading, setLoading] = useState(true)
     const [search, setSearch] = useState('')
-    const [message, setMessage] = useState('')
+    const toast = useToast()
     const financialYear = getIndianFinancialYear()
 
-    const fetchDeclarations = async () => {
-        setLoading(true)
-        const { data, error } = await supabase
-            .from('tax_declarations')
-            .select('*, employee:employees(id, first_name, last_name, employee_id, salary, salary_allowances)')
-            .order('updated_at', { ascending: false })
-        if (!error) setDeclarations(data || [])
-        setLoading(false)
-    }
+    const { data: declarations = [], isLoading: loading } = useTaxDeclarations()
+    const reviewMutation = useReviewDeclaration()
 
-    useEffect(() => {
-        fetchDeclarations()
-    }, [])
-
-    const reviewDeclaration = async (id, status) => {
-        const { data: userData } = await supabase.auth.getUser()
-        const { error } = await supabase
-            .from('tax_declarations')
-            .update({
-                status,
-                reviewed_by: userData?.user?.id,
-                reviewed_at: new Date().toISOString()
-            })
-            .eq('id', id)
-        if (error) {
-            setMessage(error.message)
-            return
-        }
-        setMessage(`Declaration ${status}.`)
-        fetchDeclarations()
-        setTimeout(() => setMessage(''), 3000)
+    const reviewDeclaration = (id, status) => {
+        reviewMutation.mutate({ id, status }, {
+            onSuccess: () => toast.success(`Declaration ${status}.`),
+            onError: (err) => toast.error(err.message || 'Failed to review declaration.')
+        })
     }
 
     const filtered = declarations.filter(item => {
@@ -60,7 +36,6 @@ export default function TaxDeclarations() {
 
     return (
         <div className="space-y-6">
-            {message && <div className="fixed top-4 right-4 bg-slate-900 text-white px-5 py-3 rounded-xl shadow-lg z-50 text-sm font-bold">{message}</div>}
 
             <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-sm">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -103,7 +78,13 @@ export default function TaxDeclarations() {
                     </thead>
                     <tbody className="divide-y divide-gray-50">
                         {loading ? (
-                            <tr><td colSpan="7" className="py-10 text-center text-gray-500">Loading...</td></tr>
+                            <tr>
+                                <td colSpan="7" className="py-10 text-center text-gray-500">
+                                    <div role="status" aria-live="polite" aria-label="Loading tax declarations">
+                                        <span>Loading...</span>
+                                    </div>
+                                </td>
+                            </tr>
                         ) : filtered.length === 0 ? (
                             <tr><td colSpan="7" className="py-10 text-center text-gray-500">No tax declarations found for {financialYear}.</td></tr>
                         ) : filtered.map(item => {
@@ -127,8 +108,8 @@ export default function TaxDeclarations() {
                                     <td className="px-6 py-4 text-right">
                                         {item.status === 'submitted' && (
                                             <div className="inline-flex gap-2">
-                                                <button onClick={() => reviewDeclaration(item.id, 'approved')} className="p-2 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100"><Check className="w-4 h-4" /></button>
-                                                <button onClick={() => reviewDeclaration(item.id, 'rejected')} className="p-2 rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100"><X className="w-4 h-4" /></button>
+                                                <button onClick={() => reviewDeclaration(item.id, 'approved')} aria-label="Approve tax declaration" className="p-2 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100"><Check className="w-4 h-4" aria-hidden="true" /></button>
+                                                <button onClick={() => reviewDeclaration(item.id, 'rejected')} aria-label="Reject tax declaration" className="p-2 rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100"><X className="w-4 h-4" aria-hidden="true" /></button>
                                             </div>
                                         )}
                                     </td>

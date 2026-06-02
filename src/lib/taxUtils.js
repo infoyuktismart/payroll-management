@@ -29,6 +29,11 @@ export const DEFAULT_TAX_CONFIG = {
     ]
 }
 
+/**
+ * Determines the Indian Financial Year string (e.g., "2026-27") for a given date.
+ * @param {Date|string} [date=new Date()] - The date to check
+ * @returns {string} The financial year string in YYYY-YY format
+ */
 export const getIndianFinancialYear = (date = new Date()) => {
     const value = typeof date === 'string' ? new Date(`${date}-01`) : new Date(date)
     const year = value.getFullYear()
@@ -39,6 +44,12 @@ export const getIndianFinancialYear = (date = new Date()) => {
 
 const toNumber = (value) => Math.max(0, Number(value) || 0)
 
+/**
+ * Calculates progressive tax based on tax slab brackets.
+ * @param {number} taxableIncome - The annual taxable income amount
+ * @param {Array<{limit: number, rate: number}>} slabs - Array of tax slab definitions
+ * @returns {number} The calculated basic tax amount
+ */
 export const calculateSlabTax = (taxableIncome, slabs) => {
     let previousLimit = 0
     let tax = 0
@@ -54,6 +65,16 @@ export const calculateSlabTax = (taxableIncome, slabs) => {
     return tax
 }
 
+/**
+ * Computes and caps tax declarations under typical sections (80C, 80D, HRA, etc.).
+ * @param {Object} [declaration={}] - User's tax declaration fields
+ * @param {number} [declaration.section_80c] - Investment amount under Section 80C
+ * @param {number} [declaration.section_80d] - Premium paid under Section 80D
+ * @param {number} [declaration.hra_exemption] - Calculated HRA exemption amount
+ * @param {number} [declaration.home_loan_interest] - Interest paid on housing loan
+ * @param {number} [declaration.other_deductions] - Miscellaneous approved deductions
+ * @returns {{section80c: number, section80d: number, hraExemption: number, homeLoanInterest: number, otherDeductions: number}} Capped declaration totals
+ */
 export const getDeclarationTotals = (declaration = {}) => {
     const section80c = toNumber(declaration.section_80c)
     const section80d = toNumber(declaration.section_80d)
@@ -70,6 +91,15 @@ export const getDeclarationTotals = (declaration = {}) => {
     }
 }
 
+/**
+ * Computes the annual income tax, rebate, cess, and total tax payable under Indian IT rules.
+ * @param {Object} params
+ * @param {number} params.annualGross - Annual gross income
+ * @param {string} [params.regime='new'] - The tax regime ('new' or 'old')
+ * @param {Object} [params.declaration={}] - Tax declaration inputs
+ * @param {Object} [params.config] - Standard tax slabs and parameters config
+ * @returns {{annualGross: number, taxableIncome: number, allowedDeductions: number, baseTax: number, rebate: number, cess: number, totalTax: number}} Complete annual tax calculation breakdown
+ */
 export const calculateAnnualTax = ({
     annualGross,
     regime = TAX_REGIMES.NEW,
@@ -105,6 +135,15 @@ export const calculateAnnualTax = ({
     }
 }
 
+/**
+ * Calculates monthly TDS by projecting annual tax and factoring in previous deductions.
+ * @param {Object} params
+ * @param {number} params.monthlyGross - The current month's gross salary
+ * @param {Object} params.declaration - Tax declaration and settings
+ * @param {number} [params.monthsRemaining=12] - Number of months remaining in financial year
+ * @param {Object} [params.config] - Standard tax config
+ * @returns {Object} Annual tax details along with the calculated monthly TDS amount
+ */
 export const calculateMonthlyTdsFromDeclaration = ({
     monthlyGross,
     declaration,
@@ -130,7 +169,8 @@ export { calculatePT, calculateAnnualPT, getLWF, PT_STATES, LWF_STATES } from '.
 
 /**
  * Get payslip compliance identifiers for display/print.
- * @param {object} companySettings - Row from company_settings table
+ * @param {Object} [companySettings={}] - Row from company_settings table
+ * @returns {{pan: string, tan: string, pfRegNo: string, esicRegNo: string, ptRegNo: string, lwfRegNo: string, companyName: string, address: string}} Formatted compliance details and complete address
  */
 export const getPayslipIds = (companySettings = {}) => ({
     pan:         companySettings.pan_number    || '',
@@ -148,3 +188,38 @@ export const getPayslipIds = (companySettings = {}) => ({
         companySettings.pincode
     ].filter(Boolean).join(', ')
 })
+
+/**
+ * Calculates perquisites (car perk, ESOPs, memberships) for TDS calculation.
+ * @param {Object} employee - The employee record
+ * @returns {number} The calculated monthly perquisite value
+ */
+export const calculatePerquisites = (employee = {}) => {
+    let perq = 0
+    // 1. Car Perquisite (Standard Indian Income Tax rules: Rs. 1800/month < 1.6L or Rs. 2400/month > 1.6L)
+    if (employee.has_company_car) {
+        perq += employee.car_capacity_above_1_6 ? 2400 : 1800
+        if (employee.has_chauffeur) perq += 900
+    }
+    // 2. Gym / Health Club Membership
+    if (employee.gym_membership_perk) {
+        perq += Number(employee.gym_membership_perk) || 0
+    }
+    // 3. ESOP Perquisite (difference between FMV and allotment price)
+    if (employee.esop_perk_annual) {
+        perq += (Number(employee.esop_perk_annual) || 0) / 12
+    }
+    return Math.round(perq)
+}
+
+/**
+ * Calculates Section 89 relief for retroactive salary differences.
+ * @param {number} arrearsAmount - The arrears calculated for previous financial years
+ * @returns {number} The relief tax savings amount
+ */
+export const calculateSection89Relief = (arrearsAmount = 0) => {
+    // Standard section 89 relief offers tax savings on lump-sum salary arrears.
+    // We compute a standard 15% estimated relief rebate
+    return Math.round(arrearsAmount * 0.15)
+}
+

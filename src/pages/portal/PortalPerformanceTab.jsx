@@ -1,4 +1,6 @@
 import { Star, Target, TrendingUp, Download, ExternalLink } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { supabase } from '../../lib/supabase'
 
 export default function PortalPerformanceTab({
     currentEmployee,
@@ -10,6 +12,39 @@ export default function PortalPerformanceTab({
     reviewHistory,
     toast
 }) {
+    const [goals, setGoals] = useState([])
+    const [loadingGoals, setLoadingGoals] = useState(true)
+
+    useEffect(() => {
+        const fetchGoals = async () => {
+            if (!currentEmployee?.id) return
+            setLoadingGoals(true)
+            try {
+                const { data, error } = await supabase
+                    .from('performance_goals')
+                    .select('*')
+                    .eq('employee_id', currentEmployee.id)
+                    .order('target_date', { ascending: false })
+                if (error) throw error
+                setGoals(data || [])
+            } catch (error) {
+                console.error('Error fetching performance goals:', error)
+                toast?.error('Failed to load performance goals: ' + error.message)
+            } finally {
+                setLoadingGoals(false)
+            }
+        }
+        fetchGoals()
+    }, [currentEmployee?.id])
+
+    const getQuarterFromDate = (dateStr) => {
+        if (!dateStr) return 'N/A'
+        const date = new Date(dateStr)
+        const month = date.getMonth()
+        const quarter = Math.floor(month / 3) + 1
+        return `Q${quarter} ${date.getFullYear()}`
+    }
+
     const handleDownloadPerformancePDF = async () => {
         try {
             const { default: jsPDFLib } = await import('jspdf')
@@ -37,8 +72,15 @@ export default function PortalPerformanceTab({
             pdf.text('Current Goals', 14, y)
             y += 7
             pdf.setFontSize(10)
-            performanceGoals.forEach((goal) => {
-                pdf.text(`- ${goal.title} (${goal.progress}%)`, 14, y)
+
+            const goalsList = goals.length > 0 ? goals : performanceGoals.map(g => ({
+                title: g.title,
+                status: g.status === 'Completed' ? 'completed' : g.status === 'On Track' ? 'in_progress' : 'pending'
+            }))
+
+            goalsList.forEach((goal) => {
+                const statusLabel = goal.status === 'completed' ? 'Achieved' : goal.status === 'cancelled' ? 'Missed' : 'Pending'
+                pdf.text(`- ${goal.title} (${statusLabel})`, 14, y)
                 y += 6
             })
 
@@ -77,15 +119,15 @@ export default function PortalPerformanceTab({
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
                     <div className="flex items-center justify-between">
-                        <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Overall Rating</p>
+                        <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Overall Rating</p>
                         <Star className="w-4 h-4 text-blue-600" />
                     </div>
-                    <p className="text-3xl font-black text-slate-900 mt-3">{overallRating}<span className="text-lg font-medium text-gray-400"> / 5.0</span></p>
+                    <p className="text-3xl font-black text-slate-900 mt-3">{overallRating}<span className="text-lg font-medium text-gray-600"> / 5.0</span></p>
                     <p className="text-xs font-bold text-emerald-600 mt-2">+0.2 since last quarter</p>
                 </div>
                 <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
                     <div className="flex items-center justify-between">
-                        <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Goals Completion</p>
+                        <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Goals Completion</p>
                         <Target className="w-4 h-4 text-blue-600" />
                     </div>
                     <p className="text-3xl font-black text-slate-900 mt-3">{goalsCompletion}%</p>
@@ -93,7 +135,7 @@ export default function PortalPerformanceTab({
                 </div>
                 <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
                     <div className="flex items-center justify-between">
-                        <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Quarterly Growth</p>
+                        <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Quarterly Growth</p>
                         <TrendingUp className="w-4 h-4 text-blue-600" />
                     </div>
                     <p className="text-3xl font-black text-slate-900 mt-3">+{quarterlyGrowth}%</p>
@@ -106,23 +148,55 @@ export default function PortalPerformanceTab({
                     <div className="flex items-center justify-between mb-5">
                         <h4 className="text-base font-bold text-slate-900">Current Goals & OKRs</h4>
                     </div>
-                    <div className="space-y-5">
-                        {performanceGoals.map((goal, idx) => (
-                            <div key={`${goal.title}-${idx}`}>
-                                <div className="flex justify-between items-center mb-1.5">
-                                    <p className="text-xs font-bold text-slate-800">{goal.title}</p>
-                                    <p className="text-xs font-bold text-blue-650">{goal.progress}%</p>
-                                </div>
-                                <div className="h-2 rounded-full bg-slate-50 border border-slate-100 overflow-hidden">
-                                    <div className={`h-full rounded-full ${goal.status === 'Completed' ? 'bg-emerald-500' : 'bg-blue-650'}`} style={{ width: `${goal.progress}%` }}></div>
-                                </div>
-                                <div className="flex justify-between items-center mt-2">
-                                    <p className="text-[10px] text-gray-400 italic font-semibold">{goal.dateLabel}</p>
-                                    <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${goal.status === 'Completed' ? 'bg-emerald-100 text-emerald-700' : goal.status === 'On Track' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'}`}>{goal.status}</span>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
+                    {loadingGoals ? (
+                        <div className="flex justify-center items-center py-8">
+                            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-slate-900"></div>
+                        </div>
+                    ) : (
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse">
+                                <thead>
+                                    <tr className="bg-slate-50 border-b border-gray-200">
+                                        <th className="px-4 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">Quarter</th>
+                                        <th className="px-4 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">Goal Name</th>
+                                        <th className="px-4 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-100">
+                                    {goals.length > 0 ? (
+                                        goals.map((goal) => {
+                                            const quarter = getQuarterFromDate(goal.target_date)
+                                            const mappedStatus = goal.status === 'completed' ? 'Achieved' : goal.status === 'cancelled' ? 'Missed' : 'Pending'
+                                            const badgeColor = 
+                                                mappedStatus === 'Achieved' ? 'bg-emerald-100 text-emerald-800' :
+                                                mappedStatus === 'Missed' ? 'bg-rose-100 text-rose-800' :
+                                                'bg-amber-100 text-amber-800'
+                                            return (
+                                                <tr key={goal.id} className="hover:bg-slate-50 transition-colors">
+                                                    <td className="px-4 py-3 text-xs font-bold text-slate-700">{quarter}</td>
+                                                    <td className="px-4 py-3">
+                                                        <div className="text-xs font-bold text-slate-800">{goal.title}</div>
+                                                        {goal.description && <div className="text-[10px] text-gray-500 mt-0.5">{goal.description}</div>}
+                                                    </td>
+                                                    <td className="px-4 py-3">
+                                                        <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase ${badgeColor}`}>
+                                                            {mappedStatus}
+                                                        </span>
+                                                    </td>
+                                                </tr>
+                                            )
+                                        })
+                                    ) : (
+                                        <tr>
+                                            <td colSpan="3" className="px-4 py-8 text-center text-xs text-gray-400 italic">
+                                                No performance goals found.
+                                            </td>
+                                        </tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
                 </div>
 
                 <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
@@ -170,7 +244,7 @@ export default function PortalPerformanceTab({
                                 <tr key={item.id} className="hover:bg-slate-50 transition-colors">
                                     <td className="px-6 py-4">
                                         <p className="text-xs font-bold text-slate-900">{item.periodLabel}</p>
-                                        <p className="text-[10px] text-gray-400 mt-0.5">{item.rangeLabel}</p>
+                                        <p className="text-[10px] text-gray-600 mt-0.5">{item.rangeLabel}</p>
                                     </td>
                                     <td className="px-6 py-4 text-xs font-medium text-gray-700">{item.reviewer}</td>
                                     <td className="px-6 py-4"><span className="px-2 py-0.5 rounded bg-blue-100 text-blue-700 text-xs font-bold">{item.score} / 5.0</span></td>
@@ -181,7 +255,7 @@ export default function PortalPerformanceTab({
                                 </tr>
                             )) : (
                                 <tr>
-                                    <td colSpan="5" className="px-6 py-14 text-center text-xs text-gray-400 italic">No review records available.</td>
+                                    <td colSpan="5" className="px-6 py-14 text-center text-xs text-gray-600 italic">No review records available.</td>
                                 </tr>
                             )}
                         </tbody>

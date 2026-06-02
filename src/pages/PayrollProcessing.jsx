@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { devLog } from '../lib/devLogger'
 import { useToast } from '../context/ToastContext'
 import { buildPayrollCsv, downloadBlob, formatCurrency } from '../lib/payrollUtils'
 import { notifyPayrollCompleted, notifyPayslipAvailable } from '../lib/notifications'
+import { sendWhatsAppNotification } from '../lib/whatsappService'
 import { Calendar, Download, Send, Play, CheckCircle, AlertTriangle, FileText, ChevronRight, Eye, X, Loader2, Search } from 'lucide-react'
 import { TableSkeleton } from '../components/ui/SkeletonLoader'
 import { usePayrollCalculation } from '../hooks/usePayrollCalculation'
@@ -31,7 +32,8 @@ export default function PayrollProcessing() {
                 processingStep: parsed.processingStep || 0,
                 employees: parsed.employees || [],
                 payrollData: parsed.payrollData || [],
-                activeTab: parsed.activeTab || 'current_period'
+                activeTab: parsed.activeTab || 'current_period',
+                runType: parsed.runType || 'regular'
             }
         } catch (e) {
             console.error('Mount: Persistence Error:', e)
@@ -42,7 +44,8 @@ export default function PayrollProcessing() {
                 processingStep: 0,
                 employees: [],
                 payrollData: [],
-                activeTab: 'current_period'
+                activeTab: 'current_period',
+                runType: 'regular'
             }
         }
     }
@@ -54,6 +57,7 @@ export default function PayrollProcessing() {
     const [selectedDate, setSelectedDate] = useState(initialState.selectedDate)
     const [selectedDepartment, setSelectedDepartment] = useState(initialState.selectedDepartment)
     const [employeeSearch, setEmployeeSearch] = useState(initialState.employeeSearch)
+    const [runType, setRunType] = useState(initialState.runType || 'regular')
 
     const {
         loading,
@@ -74,6 +78,31 @@ export default function PayrollProcessing() {
     const [selectedRun, setSelectedRun] = useState(null)
     const [runItems, setRunItems] = useState([])
     const [runLoading, setRunLoading] = useState(false)
+    const [reversingRun, setReversingRun] = useState(false)
+
+    // WhatsApp & Delivery Logs Upgrade
+    const [sendEmail, setSendEmail] = useState(true)
+    const [sendWhatsApp, setSendWhatsApp] = useState(false)
+    const [deliveryLogs, setDeliveryLogs] = useState([])
+    const [logsLoading, setLogsLoading] = useState(false)
+
+    const fetchDeliveryLogs = async () => {
+        setLogsLoading(true)
+        try {
+            const { data, error } = await supabase
+                .from('notification_logs')
+                .select('*')
+                .order('created_at', { ascending: false })
+                .limit(50)
+            if (error) throw error
+            setDeliveryLogs(data || [])
+        } catch (error) {
+            console.error('Error fetching delivery logs:', error)
+            toast.error('Failed to load delivery logs: ' + error.message)
+        } finally {
+            setLogsLoading(false)
+        }
+    }
 
     // Computed stats
     const totalGross = payrollData.reduce((sum, item) => sum + (item.grossSalary || 0), 0)
@@ -89,15 +118,18 @@ export default function PayrollProcessing() {
             processingStep,
             employees,
             payrollData,
-            activeTab
+            activeTab,
+            runType
         }
         devLog('Syncing payroll_state to sessionStorage:', stateToSave)
         sessionStorage.setItem('payroll_active_state', JSON.stringify(stateToSave))
-    }, [selectedDate, selectedDepartment, employeeSearch, processingStep, employees, payrollData, activeTab])
+    }, [selectedDate, selectedDepartment, employeeSearch, processingStep, employees, payrollData, activeTab, runType])
 
     useEffect(() => {
         if (activeTab === 'history') {
             fetchHistory()
+        } else if (activeTab === 'delivery_logs') {
+            fetchDeliveryLogs()
         }
     }, [activeTab])
 
@@ -123,10 +155,13 @@ export default function PayrollProcessing() {
                 .select(`
                     *,
                     employees (
+                        id,
                         first_name,
                         last_name,
                         employee_id,
                         email,
+                        phone,
+                        whatsapp_enabled,
                         designation,
                         department,
                         salary,
@@ -160,9 +195,47 @@ export default function PayrollProcessing() {
             setRunLoading(false)
         }
     }
+
+    const handleReversePayrollRun = async (runId) => {
+        if (!window.confirm('Are you absolutely sure you want to reverse this payroll run? This will delete all associated payroll items and mark the run as Reversed.')) return
+        setReversingRun(true)
+        try {
+            const { data: authData } = await supabase.auth.getUser()
+            
+            // Delete associated payroll items
+            const { error: itemsError } = await supabase
+                .from('payroll_items')
+                .delete()
+                .eq('payroll_run_id', runId)
+            
+            if (itemsError) throw itemsError
+
+            // Update payroll run status to reversed
+            const { error: runError } = await supabase
+                .from('payroll_runs')
+                .update({
+                    status: 'reversed',
+                    reversed_by: authData?.user?.id || null,
+                    reversed_at: new Date().toISOString()
+                })
+                .eq('id', runId)
+
+            if (runError) throw runError
+
+            toast.success('Payroll run reversed successfully.')
+            setSelectedRun(null)
+            fetchHistory()
+        } catch (error) {
+            console.error('Error reversing payroll run:', error)
+            toast.error('Failed to reverse payroll run: ' + (error.message || 'Unknown error'))
+        } finally {
+            setReversingRun(false)
+        }
+    }
+
     const startProcessing = async () => {
         try {
-            await calculatePayroll(selectedDate, selectedDepartment, employeeSearch)
+            await calculatePayroll(selectedDate, selectedDepartment, employeeSearch, runType)
         } catch (error) {
             console.error('Error starting payroll processing:', error)
         }
@@ -177,11 +250,12 @@ export default function PayrollProcessing() {
                 .from('payroll_runs')
                 .select('id, status')
                 .eq('month_year', monthStart)
+                .eq('run_type', runType)
                 .maybeSingle()
 
             if (duplicateError && duplicateError.code !== 'PGRST116') throw duplicateError
             if (duplicateRun?.id) {
-                throw new Error(`Payroll for ${selectedDate} already exists with status ${duplicateRun.status}. Duplicate runs are blocked.`)
+                throw new Error(`Payroll for ${selectedDate} (${runType}) already exists with status ${duplicateRun.status}. Duplicate runs of the same type are blocked.`)
             }
 
             devLog('Inserting payroll_run...')
@@ -193,6 +267,7 @@ export default function PayrollProcessing() {
                     total_amount: totalNet,
                     total_employees: payrollData.length,
                     status: 'Completed',
+                    run_type: runType,
                     processed_at: new Date().toISOString()
                 }])
                 .select()
@@ -214,6 +289,9 @@ export default function PayrollProcessing() {
                 total_deductions: parseFloat(item.totalDeductions.toFixed(2)),
                 net_salary: parseFloat(item.netSalary.toFixed(2)),
                 attendance_days: item.payableDays,
+                arrears_amount: item.arrearsAmount || 0,
+                perquisite_amount: item.perquisiteAmount || 0,
+                relief_section_89: item.reliefSection89 || 0,
                 breakdown: {
                     gross: item.grossSalary,
                     earnings: item.earningsList,
@@ -232,7 +310,19 @@ export default function PayrollProcessing() {
                 throw itemsError
             }
 
-            devLog('Payroll items saved successfully.')
+            // 3. Update processed arrears logs to processed status
+            const employeeIds = payrollData.map(item => item.id)
+            const { error: arrearsUpdateError } = await supabase
+                .from('salary_arrears_logs')
+                .update({ status: 'processed' })
+                .in('employee_id', employeeIds)
+                .eq('status', 'pending')
+            
+            if (arrearsUpdateError) {
+                console.error('Failed to update arrears status:', arrearsUpdateError)
+            }
+
+            devLog('Payroll items and arrears logs updated successfully.')
             const { data: authData } = await supabase.auth.getUser()
             const adminRecipients = [authData?.user?.email].filter(Boolean)
             await notifyPayrollCompleted({
@@ -284,25 +374,68 @@ export default function PayrollProcessing() {
     }
 
     const handleSendPayslips = async () => {
-        const sourceItems = selectedRun ? runItems : payrollData
-        const recipients = sourceItems.filter(item => item.employee?.email)
+        if (!sendEmail && !sendWhatsApp) {
+            toast.warning('Please select at least one delivery channel (Email or WhatsApp).')
+            return
+        }
 
-        if (!recipients.length) {
-            toast.warning('No employee email addresses found for the current payroll data.')
+        const sourceItems = selectedRun ? runItems : payrollData
+        if (!sourceItems.length) {
+            toast.warning('No payroll data available to send.')
             return
         }
 
         setLoading(true)
         try {
             const period = selectedRun?.month_year || selectedDate
-            await Promise.all(recipients.map(item => notifyPayslipAvailable({
-                email: item.employee.email,
-                employeeName: item.name,
-                period,
-                payrollRunId: selectedRun?.id
-            })))
-            setSuccessMessage(`Payslip notifications queued for ${recipients.length} employee(s).`)
-            setTimeout(() => setSuccessMessage(''), 3000)
+            let emailCount = 0
+            let whatsappCount = 0
+            const promises = []
+
+            if (sendEmail) {
+                const emailRecipients = sourceItems.filter(item => item.employee?.email)
+                emailCount = emailRecipients.length
+                promises.push(
+                    ...emailRecipients.map(item => notifyPayslipAvailable({
+                        email: item.employee.email,
+                        employeeName: item.name,
+                        period,
+                        payrollRunId: selectedRun?.id
+                    }))
+                )
+            }
+
+            if (sendWhatsApp) {
+                const whatsappRecipients = sourceItems.filter(item => item.employee?.phone)
+                whatsappCount = whatsappRecipients.length
+                
+                // Deep link url to employee portal
+                const portalUrl = `${window.location.origin}/portal`
+                
+                promises.push(
+                    ...whatsappRecipients.map(item => sendWhatsAppNotification({
+                        employeeId: item.id,
+                        period,
+                        payslipUrl: portalUrl
+                    }))
+                )
+            }
+
+            await Promise.all(promises)
+
+            let statusMsg = ''
+            if (sendEmail && emailCount > 0) statusMsg += `Email released for ${emailCount} employee(s). `
+            if (sendWhatsApp && whatsappCount > 0) statusMsg += `WhatsApp released for ${whatsappCount} employee(s). `
+
+            if (statusMsg === '') {
+                toast.warning('No eligible recipients with valid email or phone number found.')
+            } else {
+                setSuccessMessage(statusMsg.trim())
+                setTimeout(() => setSuccessMessage(''), 4000)
+            }
+        } catch (error) {
+            console.error('Payslips release failed:', error)
+            toast.error('Failed to dispatch notifications: ' + error.message)
         } finally {
             setLoading(false)
         }
@@ -321,19 +454,46 @@ export default function PayrollProcessing() {
                     <div>
                         <p className="text-sm text-gray-500 mt-1">Process monthly payroll with automated salary calculations and statutory deductions</p>
                     </div>
-                    <div className="flex space-x-2">
-                        <button
-                            onClick={handleExportPayroll}
-                            className="flex items-center space-x-2 px-4 py-2 bg-slate-900 text-white rounded-lg text-sm font-medium hover:bg-slate-800 transition-colors shadow-sm"
-                        >
-                            <Download className="w-4 h-4" /> <span>Export Payroll</span>
-                        </button>
-                        <button
-                            onClick={handleSendPayslips}
-                            className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors shadow-sm"
-                        >
-                            <Send className="w-4 h-4" /> <span>Send Payslips</span>
-                        </button>
+                    <div className="flex flex-col md:flex-row items-stretch md:items-center gap-4">
+                        {/* Delivery Channels Selectors */}
+                        <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl p-1.5 space-x-3 text-xs">
+                            <span className="font-bold text-slate-500 uppercase tracking-wider pl-2 mr-1">Delivery Channels:</span>
+                            <label className="flex items-center space-x-1.5 cursor-pointer select-none">
+                                <input
+                                    type="checkbox"
+                                    checked={sendEmail}
+                                    onChange={(e) => setSendEmail(e.target.checked)}
+                                    className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500"
+                                />
+                                <span className="font-bold text-slate-700">Email</span>
+                            </label>
+                            <label className="flex items-center space-x-1.5 cursor-pointer select-none border-l border-slate-200 pl-3 pr-2">
+                                <input
+                                    type="checkbox"
+                                    checked={sendWhatsApp}
+                                    onChange={(e) => setSendWhatsApp(e.target.checked)}
+                                    className="w-4 h-4 text-emerald-600 border-slate-300 rounded focus:ring-emerald-500"
+                                />
+                                <span className="font-bold text-slate-700 flex items-center gap-1">
+                                    WhatsApp <Badge color="bg-emerald-100 text-emerald-800 text-[9px] px-1 py-0.2">Twilio</Badge>
+                                </span>
+                            </label>
+                        </div>
+
+                        <div className="flex space-x-2">
+                            <button
+                                onClick={handleExportPayroll}
+                                className="flex items-center space-x-2 px-4 py-2 bg-slate-900 text-white rounded-lg text-sm font-medium hover:bg-slate-800 transition-colors shadow-sm"
+                            >
+                                <Download className="w-4 h-4" /> <span>Export Payroll</span>
+                            </button>
+                            <button
+                                onClick={handleSendPayslips}
+                                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors shadow-sm"
+                            >
+                                <Send className="w-4 h-4" /> <span>Send Payslips</span>
+                            </button>
+                        </div>
                     </div>
                 </header>
 
@@ -341,6 +501,7 @@ export default function PayrollProcessing() {
                 <div className="inline-flex items-center p-1 bg-white rounded-xl space-x-1 mb-6 border border-gray-200">
                     <button onClick={() => setActiveTab('current_period')} className={`px-4 py-2 text-sm font-bold rounded-lg transition-all ${activeTab === 'current_period' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:text-blue-700 hover:bg-blue-50'}`}>Current Period</button>
                     <button onClick={() => setActiveTab('history')} className={`px-4 py-2 text-sm font-bold rounded-lg transition-all ${activeTab === 'history' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:text-blue-700 hover:bg-blue-50'}`}>Payroll History</button>
+                    <button onClick={() => setActiveTab('delivery_logs')} className={`px-4 py-2 text-sm font-bold rounded-lg transition-all ${activeTab === 'delivery_logs' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:text-blue-700 hover:bg-blue-50'}`}>Delivery Logs</button>
                 </div>
 
             {activeTab === 'current_period' && (
@@ -353,7 +514,7 @@ export default function PayrollProcessing() {
                             <h3 className="text-sm font-bold text-gray-900 uppercase tracking-widest">Payroll Period Configuration</h3>
                         </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-5 md:items-end gap-6">
+                        <div className="grid grid-cols-1 md:grid-cols-6 md:items-end gap-6">
                             <div className="flex-1">
                                 <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Select Period</label>
                                 <input
@@ -362,6 +523,18 @@ export default function PayrollProcessing() {
                                     onChange={(e) => setSelectedDate(e.target.value)}
                                     className="w-full bg-slate-50 border border-gray-200 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2.5 font-bold"
                                 />
+                            </div>
+                            <div className="flex-1">
+                                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Run Type</label>
+                                <select
+                                    value={runType}
+                                    onChange={(e) => setRunType(e.target.value)}
+                                    className="w-full bg-slate-50 border border-gray-200 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2.5 font-bold"
+                                >
+                                    <option value="regular">Regular Payroll</option>
+                                    <option value="off_cycle">Off-Cycle Payroll</option>
+                                    <option value="bonus">Bonus / Incentive</option>
+                                </select>
                             </div>
                             <div className="flex-1">
                                 <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Department Filter</label>
@@ -597,6 +770,7 @@ export default function PayrollProcessing() {
                                     <thead className="bg-gray-50 border-b border-gray-200">
                                         <tr>
                                             <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Period</th>
+                                            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Run Type</th>
                                             <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Employees</th>
                                             <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Total Amount</th>
                                             <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Status</th>
@@ -608,6 +782,15 @@ export default function PayrollProcessing() {
                                         {history.map((run) => (
                                             <tr key={run.id} className="hover:bg-slate-50 transition-colors">
                                                 <td className="px-6 py-4 font-bold text-slate-800">{new Date(run.month_year).toLocaleDateString('en-US', { year: 'numeric', month: 'long' })}</td>
+                                                <td className="px-6 py-4">
+                                                    <Badge color={
+                                                        run.run_type === 'bonus' ? 'bg-purple-50 text-purple-700 border border-purple-100' :
+                                                        run.run_type === 'off_cycle' ? 'bg-amber-50 text-amber-700 border border-amber-100' :
+                                                        'bg-blue-50 text-blue-700 border border-blue-100'
+                                                    }>
+                                                        {run.run_type === 'bonus' ? 'Bonus' : run.run_type === 'off_cycle' ? 'Off-Cycle' : 'Regular'}
+                                                    </Badge>
+                                                </td>
                                                 <td className="px-6 py-4 text-sm text-gray-600">{run.total_employees}</td>
                                                 <td className="px-6 py-4 text-sm font-bold text-emerald-600">{formatCurrency(run.total_amount)}</td>
                                                 <td className="px-6 py-4"><Badge color={run.status === 'Completed' ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-600'}>{run.status}</Badge></td>
@@ -631,14 +814,25 @@ export default function PayrollProcessing() {
                         </div>
                     ) : (
                         <div className="space-y-6">
-                            <div className="flex items-center justify-between">
-                                <button
-                                    onClick={() => setSelectedRun(null)}
-                                    className="flex items-center text-sm font-bold text-slate-500 hover:text-slate-900 transition-colors"
-                                >
-                                    <ChevronRight className="w-4 h-4 rotate-180 mr-1" />
-                                    Back to History
-                                </button>
+                             <div className="flex items-center justify-between">
+                                <div className="flex items-center space-x-3">
+                                    <button
+                                        onClick={() => setSelectedRun(null)}
+                                        className="flex items-center text-sm font-bold text-slate-500 hover:text-slate-900 transition-colors"
+                                    >
+                                        <ChevronRight className="w-4 h-4 rotate-180 mr-1" />
+                                        Back to History
+                                    </button>
+                                    {selectedRun.status !== 'Reversed' && (
+                                        <button
+                                            onClick={() => handleReversePayrollRun(selectedRun.id)}
+                                            disabled={reversingRun}
+                                            className="px-3.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 disabled:opacity-50 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
+                                        >
+                                            {reversingRun ? 'Reversing...' : 'Reverse Payroll Run'}
+                                        </button>
+                                    )}
+                                </div>
                                 <div className="text-right">
                                     <h3 className="text-lg font-bold text-slate-800">{new Date(selectedRun.month_year).toLocaleDateString('en-US', { year: 'numeric', month: 'long' })}</h3>
                                     <p className="text-xs text-slate-400">Payroll run ID: {selectedRun.id.slice(0, 8)}</p>
@@ -685,6 +879,93 @@ export default function PayrollProcessing() {
                             )}
                         </div>
                     )}
+                </div>
+            )}
+
+            {activeTab === 'delivery_logs' && (
+                <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                        <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
+                            <div className="flex items-center space-x-2">
+                                <FileText className="w-5 h-5 text-slate-700" />
+                                <h3 className="text-lg font-bold text-slate-800">Notification & Delivery Logs</h3>
+                            </div>
+                            <button
+                                onClick={fetchDeliveryLogs}
+                                disabled={logsLoading}
+                                className="flex items-center space-x-1.5 px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-900 hover:text-white transition-all font-bold text-xs disabled:opacity-50"
+                            >
+                                {logsLoading ? (
+                                    <div className="animate-spin rounded-full h-3 w-3 border-2 border-slate-700 border-t-transparent mr-1"></div>
+                                ) : (
+                                    <Play className="w-3 h-3 rotate-90" />
+                                )}
+                                <span>Refresh Logs</span>
+                            </button>
+                        </div>
+
+                        {logsLoading ? (
+                            <TableSkeleton rows={5} cols={5} />
+                        ) : deliveryLogs.length > 0 ? (
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left border-collapse">
+                                    <thead className="bg-gray-50 border-b border-gray-200">
+                                        <tr>
+                                            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Timestamp</th>
+                                            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Channel</th>
+                                            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Recipient</th>
+                                            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Type</th>
+                                            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Status</th>
+                                            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Details / Errors</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-100">
+                                        {deliveryLogs.map((log) => (
+                                            <tr key={log.id} className="hover:bg-slate-50 transition-colors">
+                                                <td className="px-6 py-4 text-sm text-gray-500">
+                                                    {new Date(log.created_at).toLocaleString()}
+                                                </td>
+                                                <td className="px-6 py-4">
+                                                    <Badge color={
+                                                        log.channel === 'whatsapp' 
+                                                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' 
+                                                            : 'bg-blue-50 text-blue-700 border border-blue-100'
+                                                    }>
+                                                        {log.channel === 'whatsapp' ? 'WhatsApp' : 'Email'}
+                                                    </Badge>
+                                                </td>
+                                                <td className="px-6 py-4 font-semibold text-slate-800 text-sm">
+                                                    {log.channel === 'whatsapp' ? log.recipient_phone : log.recipient_email}
+                                                </td>
+                                                <td className="px-6 py-4 text-sm text-gray-600 capitalize">
+                                                    {log.notification_type || 'Custom'}
+                                                </td>
+                                                <td className="px-6 py-4">
+                                                    <Badge color={
+                                                        log.status === 'sent' ? 'bg-green-50 text-green-700 border border-green-100' :
+                                                        log.status === 'pending' ? 'bg-yellow-50 text-yellow-700 border border-yellow-100' :
+                                                        log.status === 'skipped' ? 'bg-gray-100 text-gray-600 border border-gray-200' :
+                                                        'bg-red-50 text-red-700 border border-red-100'
+                                                    }>
+                                                        {log.status}
+                                                    </Badge>
+                                                </td>
+                                                <td className="px-6 py-4 text-xs text-gray-500 max-w-xs truncate" title={log.error_message || log.provider_message_id || ''}>
+                                                    {log.status === 'failed' ? (
+                                                        <span className="text-red-600 font-medium">{log.error_message}</span>
+                                                    ) : (
+                                                        <span className="font-mono text-gray-400">{log.provider_message_id || 'N/A'}</span>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        ) : (
+                            <div className="p-12 text-center text-gray-500 italic">No delivery logs found.</div>
+                        )}
+                    </div>
                 </div>
             )}
             </div>

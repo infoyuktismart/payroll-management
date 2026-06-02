@@ -1,5 +1,7 @@
-import { useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
+import { useState, useEffect, useMemo } from 'react'
+import { employeeService } from '../services/employeeService'
+import { leaveService } from '../services/leaveService'
+import { attendanceService } from '../services/attendanceService'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
 import { format } from 'date-fns'
@@ -9,16 +11,24 @@ import clsx from 'clsx'
 import { TableRowSkeleton } from '../components/ui/SkeletonLoader'
 import { calculateLeaveDays, getLeavePolicyOptions } from '../lib/leaveUtils'
 import { notifyLeaveStatus } from '../lib/notifications'
+import Pagination from '../components/Pagination'
+import { useQuery } from '@tanstack/react-query'
+import { supabase } from '../lib/supabase'
+import {
+    useLeavePolicies,
+    useLeaves,
+    useLeaveBalances,
+    useCreateLeaveRequest,
+    useUpdateLeaveStatus
+} from '../hooks/useLeavesData'
+import { sanitizeFormData } from '../lib/formUtils'
+import { logger } from '../lib/devLogger'
+import { applyCompanyFilter } from '../services/tenantScope'
 
 export default function Leaves() {
     const { user, isAdmin } = useAuth()
     const toast = useToast()
-    const [leaves, setLeaves] = useState([])
-    const [employees, setEmployees] = useState({})
-    const [leavePolicies, setLeavePolicies] = useState([])
-    const [leaveBalances, setLeaveBalances] = useState([])
-    const [holidays, setHolidays] = useState([])
-    const [loading, setLoading] = useState(true)
+    const [page, setPage] = useState(0)
     const [isModalOpen, setIsModalOpen] = useState(false)
     const [formData, setFormData] = useState({
         leave_type: 'Sick Leave',
@@ -27,122 +37,71 @@ export default function Leaves() {
         reason: ''
     })
 
-    // We need employee_id. If user is admin, they might be approving. If user is employee, they request for themselves.
-    // For this MVP, we map auth.user.id to employee.user_id or we just use email to find employee.
-    // We'll assuming the logged in user is linked to an employee record.
+    // We assume the logged in user is linked to an employee record.
     const [currentEmployee, setCurrentEmployee] = useState(null)
+    const [loadingEmployee, setLoadingEmployee] = useState(true)
+    const [actionLoading, setActionLoading] = useState(false)
 
     useEffect(() => {
-        const loadInitialData = async () => {
+        const loadProfile = async () => {
             if (!user) return
             try {
-                setLoading(true)
-                // 1. Fetch current employee profile
-                const { data: emp, error: empErr } = await supabase
-                    .from('employees')
-                    .select('*')
-                    .eq('email', user.email)
-                    .single()
-                
-                if (empErr) throw empErr
+                setLoadingEmployee(true)
+                const emp = await employeeService.getEmployeeByEmail(user.email)
                 setCurrentEmployee(emp)
-
-                // 2. Fetch remaining data concurrently
-                const promises = []
-
-                // Leaves query
-                let leavesQuery = supabase.from('leaves').select('*').order('created_at', { ascending: false })
-                if (!isAdmin && emp) {
-                    leavesQuery = leavesQuery.eq('employee_id', emp.id)
-                }
-                promises.push(leavesQuery)
-
-                // Employees map query (if admin)
-                if (isAdmin) {
-                    promises.push(supabase.from('employees').select('id, first_name, last_name, leave_balance'))
-                } else {
-                    promises.push(Promise.resolve({ data: null }))
-                }
-
-                // Leave Policies query
-                promises.push(supabase.from('leave_policies').select('*').order('leave_type'))
-
-                // Holidays query
-                promises.push(supabase.from('holidays').select('date'))
-
-                // Leave Balances query (if employee exists)
-                if (emp) {
-                    const year = new Date().getFullYear()
-                    promises.push(
-                        supabase
-                            .from('leave_balances')
-                            .select('*')
-                            .eq('employee_id', emp.id)
-                            .eq('year', year)
-                            .order('leave_type')
-                    )
-                } else {
-                    promises.push(Promise.resolve({ data: null }))
-                }
-
-                const [leavesRes, employeesRes, policiesRes, holidaysRes, balancesRes] = await Promise.all(promises)
-
-                if (leavesRes.error) throw leavesRes.error
-                setLeaves(leavesRes.data || [])
-
-                if (isAdmin && employeesRes.data) {
-                    const map = {}
-                    employeesRes.data.forEach(e => map[e.id] = `${e.first_name} ${e.last_name}`)
-                    setEmployees(map)
-                }
-
-                if (policiesRes.data) {
-                    setLeavePolicies(getLeavePolicyOptions(policiesRes.data))
-                }
-
-                setHolidays(holidaysRes.data || [])
-
-                if (emp && balancesRes.data) {
-                    setLeaveBalances(balancesRes.data)
-                }
-
             } catch (error) {
-                console.error('Error loading leaves initial data:', error)
+                logger.error('Error loading employee profile:', error)
             } finally {
-                setLoading(false)
+                setLoadingEmployee(false)
             }
         }
-        loadInitialData()
-    }, [user, isAdmin])
+        loadProfile()
+    }, [user])
 
+    // Fetch leaves using paginated react-query hook
+    const { data: leavesResponse, isLoading: leavesLoading } = useLeaves({
+        employeeId: currentEmployee?.id,
+        isAdmin,
+        page,
+        pageSize: 50
+    })
+    const leaves = leavesResponse?.data || []
+    const totalPages = leavesResponse?.totalPages || 1
+    const count = leavesResponse?.count || 0
 
-    const fetchLeaveBalances = async (employeeId) => {
-        const year = new Date().getFullYear()
-        const { data } = await supabase
-            .from('leave_balances')
-            .select('*')
-            .eq('employee_id', employeeId)
-            .eq('year', year)
-            .order('leave_type')
-        setLeaveBalances(data || [])
-    }
+    // Fetch policies
+    const { data: policiesData = [] } = useLeavePolicies()
+    const leavePolicies = useMemo(() => getLeavePolicyOptions(policiesData), [policiesData])
 
+    // Fetch holidays
+    const { data: holidays = [] } = useQuery({
+        queryKey: ['holidays'],
+        queryFn: () => attendanceService.getHolidays()
+    })
 
-    const fetchLeaves = async () => {
-        try {
-            let query = supabase.from('leaves').select('*').order('created_at', { ascending: false })
+    // Fetch leave balances for employee
+    const { data: leaveBalances = [] } = useLeaveBalances(currentEmployee?.id)
 
-            if (!isAdmin && currentEmployee) {
-                query = query.eq('employee_id', currentEmployee.id)
-            }
-
-            const { data, error } = await query
+    // Fetch all employees for admin mapping
+    const { data: allEmployees = [] } = useQuery({
+        queryKey: ['allEmployeesForMapping'],
+        queryFn: async () => {
+            const { data, error } = await applyCompanyFilter(
+                supabase.from('employees').select('id, first_name, last_name')
+            )
             if (error) throw error
-            setLeaves(data)
-        } catch (error) {
-            console.error('Error fetching leaves:', error)
-        }
-    }
+            return data || []
+        },
+        enabled: !!isAdmin
+    })
+    const employees = useMemo(() => {
+        const map = {}
+        allEmployees.forEach(e => map[e.id] = `${e.first_name} ${e.last_name}`)
+        return map
+    }, [allEmployees])
+
+    const createLeaveMutation = useCreateLeaveRequest()
+    const updateLeaveStatusMutation = useUpdateLeaveStatus()
 
     const handleCreate = async (e) => {
         e.preventDefault()
@@ -152,31 +111,29 @@ export default function Leaves() {
         }
 
         try {
-            const { error } = await supabase.from('leaves').insert([{
+            setActionLoading(true)
+            await createLeaveMutation.mutateAsync(sanitizeFormData({
                 ...formData,
                 employee_id: currentEmployee.id
-            }])
+            }))
 
-            if (error) throw error
             setIsModalOpen(false)
-            fetchLeaves()
             setFormData({ leave_type: leavePolicies[0]?.leave_type || 'Sick Leave', start_date: '', end_date: '', reason: '' })
+            toast.success('Leave request submitted successfully!')
         } catch (error) {
             toast.error(error.message)
+        } finally {
+            setActionLoading(false)
         }
     }
 
     const handleStatusChange = async (id, status) => {
         try {
+            setActionLoading(true)
             const leaveBefore = leaves.find(leave => leave.id === id)
-            const rpcName = status === 'approved' ? 'approve_leave_request' : 'reject_leave_request'
-            const { error } = await supabase.rpc(rpcName, { p_leave_id: id })
-            if (error) throw error
-            const { data: leaveWithEmployee } = await supabase
-                .from('leaves')
-                .select('id, leave_type, employee:employees(first_name, last_name, email)')
-                .eq('id', id)
-                .single()
+            await updateLeaveStatusMutation.mutateAsync({ id, status })
+
+            const leaveWithEmployee = await leaveService.getLeaveWithEmployee(id)
             await notifyLeaveStatus({
                 email: leaveWithEmployee?.employee?.email,
                 employeeName: `${leaveWithEmployee?.employee?.first_name || ''} ${leaveWithEmployee?.employee?.last_name || ''}`.trim(),
@@ -184,10 +141,11 @@ export default function Leaves() {
                 leaveType: leaveWithEmployee?.leave_type || leaveBefore?.leave_type,
                 leaveId: id
             })
-            fetchLeaves()
-            if (currentEmployee) fetchLeaveBalances(currentEmployee.id)
+            toast.success(`Leave request ${status} successfully!`)
         } catch (error) {
             toast.error(error.message)
+        } finally {
+            setActionLoading(false)
         }
     }
 
@@ -201,6 +159,10 @@ export default function Leaves() {
             default: return 'bg-yellow-100 text-yellow-800'
         }
     }
+
+    const loading = loadingEmployee || leavesLoading || actionLoading
+    const indexOfFirstLeave = page * 50
+    const indexOfLastLeave = indexOfFirstLeave + leaves.length
 
     return (
         <div className="space-y-6">
@@ -274,11 +236,11 @@ export default function Leaves() {
                                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                                             {leave.status === 'pending' && (
                                                 <div className="flex justify-end space-x-2">
-                                                    <button onClick={() => handleStatusChange(leave.id, 'approved')} className="text-green-600 hover:text-green-900 bg-green-50 p-1 rounded">
-                                                        <Check className="h-4 w-4" />
+                                                    <button onClick={() => handleStatusChange(leave.id, 'approved')} aria-label="Approve leave request" className="text-green-600 hover:text-green-900 bg-green-50 p-1 rounded">
+                                                        <Check className="h-4 w-4" aria-hidden="true" />
                                                     </button>
-                                                    <button onClick={() => handleStatusChange(leave.id, 'rejected')} className="text-red-600 hover:text-red-900 bg-red-50 p-1 rounded">
-                                                        <X className="h-4 w-4" />
+                                                    <button onClick={() => handleStatusChange(leave.id, 'rejected')} aria-label="Reject leave request" className="text-red-600 hover:text-red-900 bg-red-50 p-1 rounded">
+                                                        <X className="h-4 w-4" aria-hidden="true" />
                                                     </button>
                                                 </div>
                                             )}
@@ -289,6 +251,14 @@ export default function Leaves() {
                         )}
                     </tbody>
                 </table>
+                {leaves.length > 0 && (
+                    <div className="flex items-center justify-between px-6 py-4 bg-white border-t border-gray-200">
+                        <div className="text-sm text-gray-500 font-medium">
+                            Showing <span className="font-medium">{indexOfFirstLeave + 1}</span> to <span className="font-medium">{indexOfLastLeave}</span> of <span className="font-medium">{count}</span> results
+                        </div>
+                        <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
+                    </div>
+                )}
             </div>
 
             <Modal
@@ -298,8 +268,8 @@ export default function Leaves() {
             >
                 <form onSubmit={handleCreate} className="space-y-4">
                     <div>
-                        <label className="block text-sm font-medium text-gray-700">Leave Type</label>
-                        <select
+                        <label htmlFor="auto-id-leaves-46" className="block text-sm font-medium text-gray-700">Leave Type</label>
+                        <select id="auto-id-leaves-46"
                             className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
                             value={formData.leave_type}
                             onChange={(e) => setFormData({ ...formData, leave_type: e.target.value })}
@@ -319,16 +289,16 @@ export default function Leaves() {
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                         <div>
-                            <label className="block text-sm font-medium text-gray-700">Start Date</label>
-                            <input type="date" required
+                            <label htmlFor="auto-id-leaves-47" className="block text-sm font-medium text-gray-700">Start Date</label>
+                            <input id="auto-id-leaves-47" type="date" required
                                 className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
                                 value={formData.start_date}
                                 onChange={(e) => setFormData({ ...formData, start_date: e.target.value })}
                             />
                         </div>
                         <div>
-                            <label className="block text-sm font-medium text-gray-700">End Date</label>
-                            <input type="date" required
+                            <label htmlFor="auto-id-leaves-48" className="block text-sm font-medium text-gray-700">End Date</label>
+                            <input id="auto-id-leaves-48" type="date" required
                                 className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
                                 value={formData.end_date}
                                 onChange={(e) => setFormData({ ...formData, end_date: e.target.value })}

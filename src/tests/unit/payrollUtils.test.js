@@ -113,7 +113,7 @@ describe('payrollUtils - downloadBlob', () => {
 describe('payrollUtils - calculateSettlement F&F, negative clamps, LOP shortfall pro-rating', () => {
     it('should correctly calculate F&F settlement when employee served full notice period', () => {
         const employee = {
-            salary: 60000,
+            salary: 120000,
             notice_period_days: 30,
             joining_date: '2022-01-01'
         };
@@ -138,7 +138,7 @@ describe('payrollUtils - calculateSettlement F&F, negative clamps, LOP shortfall
 
     it('should pro-rate notice recovery LOP shortfall days and clamp final amount at 0 (never negative)', () => {
         const employee = {
-            salary: 60000,
+            salary: 120000,
             notice_period_days: 60,
             joining_date: '2022-01-01'
         };

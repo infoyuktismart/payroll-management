@@ -4,11 +4,37 @@ import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
 import { Building, ShieldCheck, Mail, Phone, Globe, MapPin, Upload, Save, HelpCircle } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import { sanitizeFormData } from '../lib/formUtils'
+import { logger } from '../lib/devLogger'
+import SearchableSelect from '../components/ui/SearchableSelect'
+import { usePlanEntitlements } from '../hooks/usePlanEntitlements'
+
+const STATE_OPTIONS = [
+    {
+        label: 'States',
+        options: [
+            'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh', 'Goa', 'Gujarat', 
+            'Haryana', 'Himachal Pradesh', 'Jharkhand', 'Karnataka', 'Kerala', 'Madhya Pradesh', 
+            'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha', 'Punjab', 
+            'Rajasthan', 'Sikkim', 'Tamil Nadu', 'Telangana', 'Tripura', 'Uttar Pradesh', 
+            'Uttarakhand', 'West Bengal'
+        ]
+    },
+    {
+        label: 'Union Territories',
+        options: [
+            'Andaman and Nicobar Islands', 'Chandigarh', 'Dadra and Nagar Haveli and Daman and Diu',
+            'Delhi', 'Jammu & Kashmir', 'Ladakh', 'Lakshadweep', 'Puducherry'
+        ]
+    }
+]
 
 export default function CompanySettings() {
     const { isAdmin } = useAuth()
     const { company, loading: contextLoading, updateCompany } = useCompany()
+    const { canUseFeature, loading: entitlementLoading } = usePlanEntitlements()
     const toast = useToast()
+    const canWhiteLabel = entitlementLoading || canUseFeature('white_labeling')
 
     const [activeTab, setActiveTab] = useState('profile')
     const [submitting, setSubmitting] = useState(false)
@@ -28,18 +54,11 @@ export default function CompanySettings() {
         phone: '',
         email: '',
         website: '',
-        financial_year_start: '2026-04-01'
+        financial_year_start: '2026-04-01',
+        primary_color: '',
+        secondary_color: '',
+        tenant_subdomain: ''
     })
-
-    // States list for selection
-    const INDIAN_STATES = [
-        'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh', 'Goa', 'Gujarat', 
-        'Haryana', 'Himachal Pradesh', 'Jharkhand', 'Karnataka', 'Kerala', 'Madhya Pradesh', 
-        'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha', 'Punjab', 
-        'Rajasthan', 'Sikkim', 'Tamil Nadu', 'Telangana', 'Tripura', 'Uttar Pradesh', 
-        'Uttarakhand', 'West Bengal', 'Delhi', 'Jammu & Kashmir', 'Ladakh', 'Puducherry'
-    ]
-
     useEffect(() => {
         if (company) {
             setFormData({
@@ -57,7 +76,10 @@ export default function CompanySettings() {
                 phone: company.phone || '',
                 email: company.email || '',
                 website: company.website || '',
-                financial_year_start: company.financial_year_start || '2026-04-01'
+                financial_year_start: company.financial_year_start || '2026-04-01',
+                primary_color: company.primary_color || '',
+                secondary_color: company.secondary_color || '',
+                tenant_subdomain: company.tenant_subdomain || ''
             })
         }
     }, [company])
@@ -100,7 +122,7 @@ export default function CompanySettings() {
             setFormData(prev => ({ ...prev, logo_url: publicUrl }))
             toast.success('Logo uploaded successfully!')
         } catch (error) {
-            console.error('Error uploading logo:', error)
+            logger.error('Error uploading logo:', error)
             // If Supabase Storage is not fully configured, allow user to input direct image URL
             toast.warning('Could not upload file to storage. You can specify a logo image URL directly in the form.')
         } finally {
@@ -117,10 +139,16 @@ export default function CompanySettings() {
 
         try {
             setSubmitting(true)
-            const result = await updateCompany(formData)
+            const sanitized = sanitizeFormData(formData)
+            if (!canWhiteLabel) {
+                delete sanitized.primary_color
+                delete sanitized.secondary_color
+                delete sanitized.tenant_subdomain
+            }
+            const result = await updateCompany(sanitized)
             if (!result.success) throw result.error
         } catch (error) {
-            console.error('Submit error:', error)
+            logger.error('Submit error:', error)
         } finally {
             setSubmitting(false)
         }
@@ -154,21 +182,74 @@ export default function CompanySettings() {
                 </div>
             </div>
 
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+                    <div className="flex items-start gap-3">
+                        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-700">
+                            <Mail className="w-4 h-4" />
+                        </span>
+                        <div className="min-w-0">
+                            <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Corporate Email</p>
+                            <p className="mt-1 truncate text-sm font-bold text-slate-800">{formData.email || 'Not configured'}</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+                    <div className="flex items-start gap-3">
+                        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-700">
+                            <Phone className="w-4 h-4" />
+                        </span>
+                        <div className="min-w-0">
+                            <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Office Phone</p>
+                            <p className="mt-1 truncate text-sm font-bold text-slate-800">{formData.phone || 'Not configured'}</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+                    <div className="flex items-start gap-3">
+                        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-700">
+                            <MapPin className="w-4 h-4" />
+                        </span>
+                        <div className="min-w-0">
+                            <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Registered Office</p>
+                            <p className="mt-1 line-clamp-2 text-sm font-bold leading-5 text-slate-800">
+                                {[formData.address, formData.city, formData.state, formData.pincode].filter(Boolean).join(', ') || 'Not configured'}
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             {/* Navigation Tabs */}
             <div className="flex border-b border-gray-100 gap-6">
                 <button
                     onClick={() => setActiveTab('profile')}
-                    className={`pb-3 font-bold text-sm transition-all border-b-2 px-1 flex items-center gap-2 ${activeTab === 'profile' ? 'border-slate-900 text-slate-900' : 'border-transparent text-gray-400 hover:text-slate-800'}`}
+                    className={`pb-3 font-bold text-sm transition-all border-b-2 px-1 flex items-center gap-2 ${activeTab === 'profile' ? 'border-slate-900 text-slate-900' : 'border-transparent text-gray-600 hover:text-slate-800'}`}
                 >
                     <Building className="w-4 h-4" />
                     Company Profile
                 </button>
                 <button
                     onClick={() => setActiveTab('legal')}
-                    className={`pb-3 font-bold text-sm transition-all border-b-2 px-1 flex items-center gap-2 ${activeTab === 'legal' ? 'border-slate-900 text-slate-900' : 'border-transparent text-gray-400 hover:text-slate-800'}`}
+                    className={`pb-3 font-bold text-sm transition-all border-b-2 px-1 flex items-center gap-2 ${activeTab === 'legal' ? 'border-slate-900 text-slate-900' : 'border-transparent text-gray-600 hover:text-slate-800'}`}
                 >
                     <ShieldCheck className="w-4 h-4" />
                     Legal & Compliance
+                </button>
+                <button
+                    onClick={() => {
+                        if (!canWhiteLabel) {
+                            toast.error('White-labelling is available on the Enterprise plan.')
+                            return
+                        }
+                        setActiveTab('branding')
+                    }}
+                    className={`pb-3 font-bold text-sm transition-all border-b-2 px-1 flex items-center gap-2 ${activeTab === 'branding' ? 'border-slate-900 text-slate-900' : 'border-transparent text-gray-600 hover:text-slate-800'} ${!canWhiteLabel ? 'opacity-50' : ''}`}
+                >
+                    <Globe className="w-4 h-4" />
+                    White-Labelling & Themes
                 </button>
             </div>
 
@@ -178,7 +259,7 @@ export default function CompanySettings() {
                     <div className="space-y-8">
                         <div>
                             <h2 className="text-lg font-bold text-slate-800 mb-2">Corporate Identity</h2>
-                            <p className="text-xs text-gray-400 font-medium">Specify your corporate branding name and upload assets used in payslips and certificates.</p>
+                            <p className="text-xs text-gray-600 font-medium">Specify your corporate branding name and upload assets used in payslips and certificates.</p>
                         </div>
 
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-start">
@@ -193,7 +274,7 @@ export default function CompanySettings() {
                                 </div>
                                 <div>
                                     <p className="text-xs font-bold text-slate-800">Corporate Logo</p>
-                                    <p className="text-[10px] text-gray-400 mt-1">SVG, PNG or JPG (Max 500KB)</p>
+                                    <p className="text-[10px] text-gray-600 mt-1">SVG, PNG or JPG (Max 500KB)</p>
                                 </div>
                                 {isAdmin && (
                                     <label className="inline-flex items-center gap-2 bg-slate-50 border border-gray-200 text-slate-700 text-xs font-bold px-4 py-2 rounded-xl cursor-pointer hover:bg-slate-100 active:scale-95 transition-all">
@@ -207,8 +288,8 @@ export default function CompanySettings() {
                             {/* Core Inputs */}
                             <div className="md:col-span-2 space-y-6">
                                 <div>
-                                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Company Name *</label>
-                                    <input
+                                    <label htmlFor="auto-id-companysettings-59" className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Company Name *</label>
+                                    <input id="auto-id-companysettings-59"
                                         type="text"
                                         required
                                         name="name"
@@ -221,10 +302,10 @@ export default function CompanySettings() {
                                 </div>
 
                                 <div>
-                                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Website URL</label>
+                                    <label htmlFor="auto-id-companysettings-60" className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Website URL</label>
                                     <div className="relative">
                                         <Globe className="w-4 h-4 text-gray-300 absolute left-4 top-1/2 -translate-y-1/2" />
-                                        <input
+                                        <input id="auto-id-companysettings-60"
                                             type="url"
                                             name="website"
                                             value={formData.website}
@@ -242,15 +323,15 @@ export default function CompanySettings() {
                         <hr className="border-gray-100" />
                         <div>
                             <h2 className="text-lg font-bold text-slate-800 mb-2">Communication & Office Location</h2>
-                            <p className="text-xs text-gray-400 font-medium">Used for tax invoice declarations, billing details, and government registry compliance.</p>
+                            <p className="text-xs text-gray-600 font-medium">Used for tax invoice declarations, billing details, and government registry compliance.</p>
                         </div>
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Corporate Email</label>
+                                <label htmlFor="auto-id-companysettings-61" className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Corporate Email</label>
                                 <div className="relative">
                                     <Mail className="w-4 h-4 text-gray-300 absolute left-4 top-1/2 -translate-y-1/2" />
-                                    <input
+                                    <input id="auto-id-companysettings-61"
                                         type="email"
                                         name="email"
                                         value={formData.email}
@@ -263,10 +344,10 @@ export default function CompanySettings() {
                             </div>
 
                             <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Office Phone Number</label>
+                                <label htmlFor="auto-id-companysettings-62" className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Office Phone Number</label>
                                 <div className="relative">
                                     <Phone className="w-4 h-4 text-gray-300 absolute left-4 top-1/2 -translate-y-1/2" />
-                                    <input
+                                    <input id="auto-id-companysettings-62"
                                         type="tel"
                                         name="phone"
                                         value={formData.phone}
@@ -297,8 +378,8 @@ export default function CompanySettings() {
 
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                             <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">City</label>
-                                <input
+                                <label htmlFor="auto-id-companysettings-63" className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">City</label>
+                                <input id="auto-id-companysettings-63"
                                     type="text"
                                     name="city"
                                     value={formData.city}
@@ -310,24 +391,20 @@ export default function CompanySettings() {
                             </div>
 
                             <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">State</label>
-                                <select
+                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">State / Union Territory</label>
+                                <SearchableSelect
                                     name="state"
                                     value={formData.state}
                                     onChange={handleChange}
                                     disabled={!isAdmin || submitting}
-                                    className="w-full px-4 py-3 bg-white border border-slate-200 hover:border-slate-300 rounded-xl text-sm font-medium text-slate-800 shadow-sm focus:ring-2 focus:ring-slate-900 focus:border-slate-900 focus:outline-none transition-all"
-                                >
-                                    <option value="">Select State</option>
-                                    {INDIAN_STATES.map(st => (
-                                        <option key={st} value={st}>{st}</option>
-                                    ))}
-                                </select>
+                                    options={STATE_OPTIONS}
+                                    placeholder="Select State / UT"
+                                />
                             </div>
 
                             <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">PIN Code</label>
-                                <input
+                                <label htmlFor="auto-id-companysettings-65" className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">PIN Code</label>
+                                <input id="auto-id-companysettings-65"
                                     type="text"
                                     name="pincode"
                                     value={formData.pincode}
@@ -345,16 +422,16 @@ export default function CompanySettings() {
                     <div className="space-y-8">
                         <div>
                             <h2 className="text-lg font-bold text-slate-800 mb-2">Government Compliance & Legal IDs</h2>
-                            <p className="text-xs text-gray-400 font-medium">Verify legal parameters required for statutory income tax (TDS), ESIC, EPFO returns, and payslips.</p>
+                            <p className="text-xs text-gray-600 font-medium">Verify legal parameters required for statutory income tax (TDS), ESIC, EPFO returns, and payslips.</p>
                         </div>
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div>
                                 <div className="flex items-center justify-between mb-2">
-                                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest">Company PAN (10 chars)</label>
+                                    <label htmlFor="auto-id-companysettings-66" className="block text-xs font-bold text-slate-500 uppercase tracking-widest">Company PAN (10 chars)</label>
                                     <HelpCircle className="w-3.5 h-3.5 text-gray-300 cursor-help" title="Income Tax permanent account number" />
                                 </div>
-                                <input
+                                <input id="auto-id-companysettings-66"
                                     type="text"
                                     name="pan_number"
                                     maxLength={10}
@@ -368,10 +445,10 @@ export default function CompanySettings() {
 
                             <div>
                                 <div className="flex items-center justify-between mb-2">
-                                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest">Company TAN (10 chars)</label>
+                                    <label htmlFor="auto-id-companysettings-67" className="block text-xs font-bold text-slate-500 uppercase tracking-widest">Company TAN (10 chars)</label>
                                     <HelpCircle className="w-3.5 h-3.5 text-gray-300 cursor-help" title="Tax deduction and collection account number" />
                                 </div>
-                                <input
+                                <input id="auto-id-companysettings-67"
                                     type="text"
                                     name="tan_number"
                                     maxLength={10}
@@ -386,8 +463,8 @@ export default function CompanySettings() {
 
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                             <div className="md:col-span-1">
-                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">GSTIN Identifier</label>
-                                <input
+                                <label htmlFor="auto-id-companysettings-68" className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">GSTIN Identifier</label>
+                                <input id="auto-id-companysettings-68"
                                     type="text"
                                     name="gst_number"
                                     maxLength={15}
@@ -400,8 +477,8 @@ export default function CompanySettings() {
                             </div>
 
                             <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">EPFO Number (15 chars)</label>
-                                <input
+                                <label htmlFor="auto-id-companysettings-69" className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">EPFO Number (15 chars)</label>
+                                <input id="auto-id-companysettings-69"
                                     type="text"
                                     name="epfo_number"
                                     maxLength={15}
@@ -414,8 +491,8 @@ export default function CompanySettings() {
                             </div>
 
                             <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">ESIC Number (17 chars)</label>
-                                <input
+                                <label htmlFor="auto-id-companysettings-70" className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">ESIC Number (17 chars)</label>
+                                <input id="auto-id-companysettings-70"
                                     type="text"
                                     name="esic_number"
                                     maxLength={17}
@@ -431,12 +508,12 @@ export default function CompanySettings() {
                         <hr className="border-gray-100" />
                         <div>
                             <h2 className="text-lg font-bold text-slate-800 mb-2">Accounting Period Configuration</h2>
-                            <p className="text-xs text-gray-400 font-medium">Verify financial bookkeeping terms that orchestrate tax declaration deadlines.</p>
+                            <p className="text-xs text-gray-600 font-medium">Verify financial bookkeeping terms that orchestrate tax declaration deadlines.</p>
                         </div>
 
                         <div>
-                            <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Financial Year Launch Date</label>
-                            <input
+                            <label htmlFor="auto-id-companysettings-71" className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Financial Year Launch Date</label>
+                            <input id="auto-id-companysettings-71"
                                 type="date"
                                 required
                                 name="financial_year_start"
@@ -445,6 +522,86 @@ export default function CompanySettings() {
                                 disabled={!isAdmin || submitting}
                                 className="w-full max-w-sm px-4 py-3 bg-white border border-slate-200 hover:border-slate-300 rounded-xl text-sm font-medium text-slate-800 shadow-sm focus:ring-2 focus:ring-slate-900 focus:border-slate-900 focus:outline-none transition-all"
                             />
+                        </div>
+                    </div>
+                )}
+
+                {activeTab === 'branding' && (
+                    <div className="space-y-8">
+                        <div>
+                            <h2 className="text-lg font-bold text-slate-800 mb-2">Enterprise White-Labelling & Themes</h2>
+                            <p className="text-xs text-gray-600 font-medium">Customize your platform styling, color palettes, and configure custom subdomains for tenant isolation.</p>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div>
+                                <label htmlFor="auto-id-companysettings-brand-1" className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Primary Theme Color</label>
+                                <div className="flex items-center gap-3">
+                                    <input id="auto-id-companysettings-brand-1"
+                                        type="color"
+                                        name="primary_color"
+                                        value={formData.primary_color || '#2563eb'}
+                                        onChange={handleChange}
+                                        disabled={!isAdmin || submitting}
+                                        className="w-12 h-12 bg-transparent border-0 cursor-pointer rounded"
+                                    />
+                                    <input
+                                        type="text"
+                                        name="primary_color"
+                                        maxLength={7}
+                                        value={formData.primary_color}
+                                        onChange={handleChange}
+                                        disabled={!isAdmin || submitting}
+                                        placeholder="#2563eb"
+                                        className="flex-1 px-4 py-3 bg-white border border-slate-200 hover:border-slate-300 rounded-xl text-sm font-semibold text-slate-800 shadow-sm focus:ring-2 focus:ring-slate-900 focus:border-slate-900 focus:outline-none transition-all placeholder:text-slate-400"
+                                    />
+                                </div>
+                            </div>
+
+                            <div>
+                                <label htmlFor="auto-id-companysettings-brand-2" className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Secondary Theme Color</label>
+                                <div className="flex items-center gap-3">
+                                    <input id="auto-id-companysettings-brand-2"
+                                        type="color"
+                                        name="secondary_color"
+                                        value={formData.secondary_color || '#4f46e5'}
+                                        onChange={handleChange}
+                                        disabled={!isAdmin || submitting}
+                                        className="w-12 h-12 bg-transparent border-0 cursor-pointer rounded"
+                                    />
+                                    <input
+                                        type="text"
+                                        name="secondary_color"
+                                        maxLength={7}
+                                        value={formData.secondary_color}
+                                        onChange={handleChange}
+                                        disabled={!isAdmin || submitting}
+                                        placeholder="#4f46e5"
+                                        className="flex-1 px-4 py-3 bg-white border border-slate-200 hover:border-slate-300 rounded-xl text-sm font-semibold text-slate-800 shadow-sm focus:ring-2 focus:ring-slate-900 focus:border-slate-900 focus:outline-none transition-all placeholder:text-slate-400"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label htmlFor="auto-id-companysettings-brand-3" className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Tenant Subdomain Scoping</label>
+                            <div className="relative flex items-center">
+                                <input id="auto-id-companysettings-brand-3"
+                                    type="text"
+                                    name="tenant_subdomain"
+                                    value={formData.tenant_subdomain}
+                                    onChange={handleChange}
+                                    disabled={!isAdmin || submitting}
+                                    placeholder="e.g. acme"
+                                    className="w-full pl-4 pr-32 py-3 bg-white border border-slate-200 hover:border-slate-300 rounded-xl text-sm font-semibold text-slate-800 shadow-sm focus:ring-2 focus:ring-slate-900 focus:border-slate-900 focus:outline-none transition-all placeholder:text-slate-400"
+                                />
+                                <span className="absolute right-4 text-sm font-bold text-slate-400 select-none pointer-events-none">
+                                    .ourpayroll.com
+                                </span>
+                            </div>
+                            <p className="text-[10px] text-slate-400 font-medium mt-2 leading-relaxed">
+                                * Sets up routing scoping. Standard users visiting this subdomain will strictly view and authenticate with this tenant's workspace boundary. Local testing supports <code className="bg-slate-50 border border-gray-200 px-1 py-0.2 rounded font-mono text-xs">?tenant=subdomain</code> parameter simulation.
+                            </p>
                         </div>
                     </div>
                 )}

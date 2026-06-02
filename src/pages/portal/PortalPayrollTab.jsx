@@ -1,6 +1,14 @@
 import { useState } from 'react'
 import { WalletCards, Calendar, PiggyBank, Landmark, FileText, Eye, Calculator, Loader2, Shield, Download, X, Printer } from 'lucide-react'
 import { useCompany } from '../../context/CompanyContext'
+import { logger } from '../../lib/devLogger'
+import { generateForm12BB } from '../../lib/form12bbGenerator'
+
+const maskPAN = (pan) => {
+    if (!pan) return 'Not provided'
+    if (pan.length < 10) return pan
+    return `${pan.slice(0, 3)}XX${pan.slice(5, 9)}${pan.slice(-1)}`
+}
 
 export default function PortalPayrollTab({
     currentEmployee,
@@ -132,7 +140,7 @@ export default function PortalPayrollTab({
                 window.URL.revokeObjectURL(url)
             }, 2000)
         } catch (error) {
-            console.error('PDF Error:', error)
+            logger.error('PDF Error:', error)
             toast.error('Failed to generate PDF: ' + (error.message || 'Unknown error'))
         } finally {
             setDownloading(false)
@@ -159,7 +167,7 @@ export default function PortalPayrollTab({
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
                     <div className="flex items-center justify-between">
-                        <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Monthly Salary</p>
+                        <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Monthly Salary</p>
                         <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center border border-blue-100"><WalletCards className="w-5 h-5" /></div>
                     </div>
                     <p className="text-2xl font-black text-slate-900 mt-3">{formatCurrency(monthlySalary)}</p>
@@ -168,7 +176,7 @@ export default function PortalPayrollTab({
 
                 <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
                     <div className="flex items-center justify-between">
-                        <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Pay Frequency</p>
+                        <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Pay Frequency</p>
                         <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center border border-blue-100"><Calendar className="w-5 h-5" /></div>
                     </div>
                     <p className="text-2xl font-black text-slate-900 mt-3">{payFrequency}</p>
@@ -177,7 +185,7 @@ export default function PortalPayrollTab({
 
                 <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
                     <div className="flex items-center justify-between">
-                        <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">YTD Earnings</p>
+                        <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">YTD Earnings</p>
                         <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center border border-blue-100"><PiggyBank className="w-5 h-5" /></div>
                     </div>
                     <p className="text-2xl font-black text-slate-900 mt-3">{formatCurrency(ytdEarnings)}</p>
@@ -210,7 +218,7 @@ export default function PortalPayrollTab({
                         </div>
                         <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div>
-                                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Tax Regime</p>
+                                <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Tax Regime</p>
                                 <select
                                     value={taxForm.regime}
                                     onChange={(e) => updateTaxForm('regime', e.target.value)}
@@ -222,15 +230,15 @@ export default function PortalPayrollTab({
                                 </select>
                             </div>
                             <div>
-                                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">PAN Number</p>
-                                <p className="text-sm font-bold text-slate-850 mt-2">{currentEmployee.pan_number || 'Not provided'}</p>
+                                <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">PAN Number</p>
+                                <p className="text-sm font-bold text-slate-850 mt-2">{maskPAN(currentEmployee.pan_number)}</p>
                             </div>
                             <div>
-                                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Aadhaar</p>
+                                <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Aadhaar</p>
                                 <p className="text-sm font-bold text-slate-850 mt-2">{maskedIdentifier}</p>
                             </div>
                             <div>
-                                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">UAN / PF Number</p>
+                                <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">UAN / PF Number</p>
                                 <p className="text-sm font-bold text-slate-850 mt-2">{currentEmployee.uan_number || 'Not provided'}</p>
                             </div>
                         </div>
@@ -246,7 +254,7 @@ export default function PortalPayrollTab({
                                     ['tds_already_deducted', 'TDS Already Deducted', 'Tax deducted YTD']
                                 ].map(([field, label, hint]) => (
                                     <label key={field} className="block">
-                                        <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">{label}</span>
+                                        <span className="text-xs font-bold text-gray-600 uppercase tracking-wider">{label}</span>
                                         <input
                                             type="number"
                                             min="0"
@@ -255,14 +263,14 @@ export default function PortalPayrollTab({
                                             disabled={!canEditTaxDeclaration}
                                             className="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-gray-200 text-xs font-bold text-slate-800 disabled:bg-slate-50 disabled:text-gray-550"
                                         />
-                                        <span className="text-[10px] text-gray-400 mt-1 block">{hint}</span>
+                                        <span className="text-[10px] text-gray-600 mt-1 block">{hint}</span>
                                     </label>
                                 ))}
                             </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                                 <div className="rounded-xl bg-slate-50 border border-slate-100 p-4">
-                                    <p className="text-[10px] font-bold text-gray-400 uppercase">FY</p>
+                                    <p className="text-[10px] font-bold text-gray-600 uppercase">FY</p>
                                     <p className="text-sm font-black text-slate-800 mt-1">{taxFinancialYear}</p>
                                 </div>
                                 <div className="rounded-xl bg-blue-50 border border-blue-100 p-4">
@@ -276,17 +284,32 @@ export default function PortalPayrollTab({
                             </div>
 
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
-                                <p className="text-[10px] text-gray-400 leading-normal max-w-sm">
+                                <p className="text-[10px] text-gray-600 leading-normal max-w-sm">
                                     Admin/HR approval is required before payroll processes utilize this declaration.
                                 </p>
-                                <button
-                                    onClick={saveTaxDeclaration}
-                                    disabled={!canEditTaxDeclaration || savingTaxDeclaration}
-                                    className="px-5 py-2.5 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
-                                >
-                                    {savingTaxDeclaration ? <Loader2 className="w-4 h-4 animate-spin" /> : <Calculator className="w-4 h-4" />}
-                                    Submit Declaration
-                                </button>
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => generateForm12BB({
+                                            employee: currentEmployee,
+                                            company: company || {},
+                                            taxForm,
+                                            financialYear: taxFinancialYear
+                                        })}
+                                        className="px-5 py-2.5 rounded-xl border border-gray-250 text-slate-700 bg-white text-xs font-bold hover:bg-slate-50 inline-flex items-center justify-center gap-2 shadow-sm"
+                                    >
+                                        <Download className="w-4 h-4" />
+                                        Download Form 12BB
+                                    </button>
+                                    <button
+                                        onClick={saveTaxDeclaration}
+                                        disabled={!canEditTaxDeclaration || savingTaxDeclaration}
+                                        className="px-5 py-2.5 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2 shadow"
+                                    >
+                                        {savingTaxDeclaration ? <Loader2 className="w-4 h-4 animate-spin" /> : <Calculator className="w-4 h-4" />}
+                                        Submit Declaration
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -310,7 +333,7 @@ export default function PortalPayrollTab({
                                     <p className="text-sm font-black text-slate-800">{item.value}</p>
                                 </div>
                             )) : (
-                                <div className="px-6 py-8 text-xs text-gray-400 italic">No enrolled benefits found in payroll records.</div>
+                                <div className="px-6 py-8 text-xs text-gray-600 italic">No enrolled benefits found in payroll records.</div>
                             )}
                         </div>
                         <div className="px-6 py-4 bg-slate-50 border-t border-gray-100 text-xs text-slate-650 font-bold">
@@ -326,9 +349,9 @@ export default function PortalPayrollTab({
                             <table className="w-full">
                                 <thead className="bg-slate-50 border-b border-gray-150">
                                     <tr>
-                                        <th className="px-6 py-3.5 text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider">Payroll Period</th>
-                                        <th className="px-6 py-3.5 text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider">Net Amount</th>
-                                        <th className="px-6 py-3.5 text-right text-[10px] font-bold text-gray-400 uppercase tracking-wider">Action</th>
+                                        <th className="px-6 py-3.5 text-left text-[10px] font-bold text-gray-600 uppercase tracking-wider">Payroll Period</th>
+                                        <th className="px-6 py-3.5 text-left text-[10px] font-bold text-gray-600 uppercase tracking-wider">Net Amount</th>
+                                        <th className="px-6 py-3.5 text-right text-[10px] font-bold text-gray-600 uppercase tracking-wider">Action</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-gray-100">
@@ -339,7 +362,7 @@ export default function PortalPayrollTab({
                                                 <td className="px-6 py-4 text-xs font-bold text-slate-800">{formatMonthYearSafe(period, 'Current Period')}</td>
                                                 <td className="px-6 py-4 text-sm font-black text-slate-800">{formatCurrency(Number(slip.net_salary) || 0)}</td>
                                                 <td className="px-6 py-4 text-right">
-                                                    <button onClick={() => setSelectedSlip(slip)} className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition" aria-label="View payslip details">
+                                                    <button onClick={() => setSelectedSlip(slip)} className="p-2 text-gray-600 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition" aria-label="View payslip details">
                                                         <Eye className="w-4 h-4" />
                                                     </button>
                                                 </td>
@@ -347,7 +370,7 @@ export default function PortalPayrollTab({
                                         )
                                     }) : (
                                         <tr>
-                                            <td colSpan="3" className="px-6 py-12 text-center text-xs text-gray-400 italic">No payslip records available.</td>
+                                            <td colSpan="3" className="px-6 py-12 text-center text-xs text-gray-600 italic">No payslip records available.</td>
                                         </tr>
                                     )}
                                 </tbody>

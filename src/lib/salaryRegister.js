@@ -84,29 +84,39 @@ export const buildSalaryRegisterCSV = (employees, monthYear, company = {}) => {
             return Number(emp[keys] || components[keys]?.amount || 0)
         }
 
-        const basic           = getComp(['basic', 'basicSalary', 'Basic'])
-        const hra             = getComp(['hra', 'HRA'])
-        const conveyance      = getComp(['conveyance', 'Conveyance'])
-        const medical         = getComp(['medical', 'Medical'])
+        const basic = getComp(['basic', 'basicSalary', 'Basic'])
+        const hra = getComp(['hra', 'HRA'])
+        const conveyance = getComp(['conveyance', 'Conveyance'])
+        const medical = getComp(['medical', 'Medical'])
         const specialAllowance = getComp(['special_allowance', 'specialAllowance', 'Special Allowance'])
-        const lta             = getComp(['lta', 'LTA'])
-        const otherAllowance  = getComp(['other_allowance', 'otherAllowance'])
-        const overtime        = getComp(['overtime', 'Overtime'])
-        const grossEarnings   = Number(emp.grossSalary || emp.gross_salary || 0) || (basic + hra + conveyance + medical + specialAllowance + lta + otherAllowance + overtime)
+        const lta = getComp(['lta', 'LTA'])
+        const otherAllowance = getComp(['other_allowance', 'otherAllowance'])
+        const overtime = getComp(['overtime', 'Overtime'])
+        // ── SSOT: read from finalized DB payslip — NO fallback arithmetic ──────
+        // If an employee's payroll hasn't been processed by the DB engine yet,
+        // the cell is left blank rather than computing a potentially-wrong value.
+        const grossEarnings = Number(emp.grossSalary || emp.gross_salary) || 0
 
-        const employeePF      = getComp(['pf', 'epf', 'employee_pf'])
-        const employeeESI     = getComp(['esi', 'esic', 'employee_esi'])
-        const pt              = getComp(['pt', 'professional_tax', 'professionalTax'])
-        const lwf             = getComp(['lwf', 'labour_welfare_fund'])
-        const tds             = getComp(['tds', 'income_tax'])
-        const advanceLoan     = getComp(['advance', 'loan_deduction'])
-        const otherDeductions = getComp(['other_deductions'])
-        const totalDeductions = Number(emp.totalDeductions || 0) || (employeePF + employeeESI + pt + lwf + tds + advanceLoan + otherDeductions)
-        const netPay          = Number(emp.netSalary || emp.net_salary || 0) || (grossEarnings - totalDeductions)
+        // Deductions: prefer the typed breakdown from the DB payslip engine
+        const dedBreakdown   = emp.deductions_breakdown || emp.deductionsList || []
+        const findDed        = (...keys) => {
+            const found = dedBreakdown.find(d => keys.some(k => (d.system_type || d.name || '').toLowerCase().includes(k.toLowerCase())))
+            return found ? Number(found.amount) || 0 : 0
+        }
+        const employeePF     = findDed('PF', 'pf', 'provident')
+        const employeeESI    = findDed('ESI', 'esi', 'state insurance')
+        const pt             = findDed('PT', 'professional')
+        const lwf            = findDed('LWF', 'welfare')
+        const tds            = findDed('TDS', 'income tax')
+        const advanceLoan    = findDed('advance', 'loan')
+        const otherDeductions= findDed('other')
+        // totalDeductions and netPay: SSOT only — DB-computed, never re-derived
+        const totalDeductions= Number(emp.totalDeductions || emp.total_deductions) || 0
+        const netPay         = Number(emp.netSalary      || emp.net_salary)        || 0
 
-        const totalDays   = emp.totalDays   || emp.total_days   || 30
+        const totalDays = emp.totalDays || emp.total_days || 30
         const workingDays = emp.workingDays || emp.working_days || 26
-        const lopDays     = emp.lop_days    || emp.lopDays      || 0
+        const lopDays = emp.lop_days || emp.lopDays || 0
         const payableDays = emp.payableDays || emp.payable_days || (workingDays - lopDays)
 
         return [
@@ -181,9 +191,21 @@ export const downloadSalaryRegister = (employees, monthYear, company = {}) => {
  * @param {Array} employees
  * @returns {{ totalGross, totalDeductions, totalNetPay, headcount }}
  */
-export const getSalaryRegisterSummary = (employees) => ({
-    headcount:        employees.length,
-    totalGross:       employees.reduce((s, e) => s + Number(e.grossSalary || e.gross_salary || 0), 0),
-    totalDeductions:  employees.reduce((s, e) => s + Number(e.totalDeductions || 0), 0),
-    totalNetPay:      employees.reduce((s, e) => s + Number(e.netSalary || e.net_salary || 0), 0),
-})
+/**
+ * Build a lightweight summary object for dashboard display.
+ * Reads from SSOT fields only — no arithmetic fallbacks.
+ * For pre-aggregated server-side totals, use payslipService.getRunSummary(runId).
+ * @param {Array} employees — array of finalized PayslipDTO objects
+ * @returns {{ headcount, totalGross, totalDeductions, totalNetPay }}
+ */
+export const getSalaryRegisterSummary = (employees) => {
+    let headcount = 0, totalGross = 0, totalDeductions = 0, totalNetPay = 0
+    for (const e of employees) {
+        headcount++
+        // SSOT: read DB-finalized fields, do NOT re-derive via arithmetic
+        totalGross       = totalGross       + (Number(e.grossSalary    || e.gross_salary)    || 0)
+        totalDeductions  = totalDeductions  + (Number(e.totalDeductions || e.total_deductions) || 0)
+        totalNetPay      = totalNetPay      + (Number(e.netSalary      || e.net_salary)      || 0)
+    }
+    return { headcount, totalGross, totalDeductions, totalNetPay }
+}

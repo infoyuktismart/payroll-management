@@ -1,5 +1,5 @@
-import { Plus, X, Clock, LogOut, Check, AlertCircle, Calendar } from 'lucide-react'
-import { calculateLeaveDays, getLeavePolicyOptions } from '../../lib/leaveUtils'
+import { Plus, X, Clock, LogOut, Check, AlertCircle } from 'lucide-react'
+import { getLeavePolicyOptions, applySandwichRule } from '../../lib/leaveUtils'
 
 export default function PortalTimeOffTab({
     currentEmployee: _currentEmployee,
@@ -34,7 +34,9 @@ export default function PortalTimeOffTab({
     setShowLeaveModal,
     handleApplyLeave,
     holidays,
-    loading
+    loading,
+    workMode,
+    setWorkMode
 }) {
     return (
         <div className="space-y-6">
@@ -65,9 +67,9 @@ export default function PortalTimeOffTab({
                                 <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${card.iconBg}`}>
                                     <Icon className="w-5 h-5 text-slate-700" />
                                 </div>
-                                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">{card.title}</p>
+                                <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">{card.title}</p>
                             </div>
-                            <p className="text-3xl font-black text-slate-900 mt-4">{remaining}<span className="text-sm font-bold text-gray-400"> days left</span></p>
+                            <p className="text-3xl font-black text-slate-900 mt-4">{remaining}<span className="text-sm font-bold text-gray-600"> days left</span></p>
                             <div className="mt-4 h-2 rounded-full bg-slate-50 border border-slate-100 overflow-hidden">
                                 <div className={`h-full rounded-full ${card.accent}`} style={{ width: `${progress}%` }}></div>
                             </div>
@@ -102,7 +104,7 @@ export default function PortalTimeOffTab({
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6 pt-6 border-t border-gray-150">
                             {/* Live Running Time */}
                             <div className="flex flex-col justify-center bg-slate-50 p-4 rounded-xl border border-gray-150">
-                                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Current Time</span>
+                                <span className="text-[10px] font-bold text-gray-600 uppercase tracking-wider">Current Time</span>
                                 <span className="text-lg font-black text-slate-800 mt-1">
                                     {currentTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })}
                                 </span>
@@ -113,7 +115,7 @@ export default function PortalTimeOffTab({
 
                             {/* Punch Stats */}
                             <div className="flex flex-col justify-center bg-slate-50 p-4 rounded-xl border border-gray-150">
-                                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Punch Log</span>
+                                <span className="text-[10px] font-bold text-gray-600 uppercase tracking-wider">Punch Log</span>
                                 <div className="space-y-1 mt-1.5">
                                     <p className="text-xs font-bold text-slate-700">
                                         In: <span className="text-slate-900 font-bold">{todayPunch ? new Date(todayPunch.punch_in).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }) : '-'}</span>
@@ -126,7 +128,7 @@ export default function PortalTimeOffTab({
 
                             {/* IP & Worked Duration */}
                             <div className="flex flex-col justify-center bg-slate-50 p-4 rounded-xl border border-gray-150">
-                                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">System Details</span>
+                                <span className="text-[10px] font-bold text-gray-600 uppercase tracking-wider">System Details</span>
                                 <p className="text-xs font-bold text-slate-700 mt-1.5">
                                     IP: <span className="text-slate-900 font-bold">{userIp}</span>
                                 </p>
@@ -145,6 +147,35 @@ export default function PortalTimeOffTab({
                             </div>
                         </div>
 
+                        {/* WFH / WFO / Client Site segmented control */}
+                        {!todayPunch && (
+                            <div className="mt-6 pt-4 border-t border-gray-150">
+                                <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2.5">
+                                    Select Work Mode
+                                </label>
+                                <div className="flex bg-slate-50 p-1 rounded-xl border border-gray-150 w-full md:w-max gap-1">
+                                    {[
+                                        { key: 'WFO', label: 'Office (WFO)' },
+                                        { key: 'WFH', label: 'Home (WFH)' },
+                                        { key: 'Client Site', label: 'Client Site' }
+                                    ].map((mode) => (
+                                        <button
+                                            key={mode.key}
+                                            type="button"
+                                            onClick={() => setWorkMode(mode.key)}
+                                            className={`px-4 py-2 rounded-lg text-xs font-bold transition-all duration-205 ${
+                                                workMode === mode.key
+                                                    ? 'bg-blue-600 text-white shadow'
+                                                    : 'text-gray-500 hover:text-slate-700 hover:bg-slate-100'
+                                            }`}
+                                        >
+                                            {mode.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
                         <div className="flex justify-end gap-3 mt-6">
                             {!todayPunch ? (
                                 <button
@@ -156,14 +187,20 @@ export default function PortalTimeOffTab({
                                     {punching ? 'Punching In...' : 'Punch In Shift'}
                                 </button>
                             ) : !todayPunch.punch_out ? (
-                                <button
-                                    onClick={handlePunchOut}
-                                    disabled={punching}
-                                    className="bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs px-5 py-2.5 rounded-xl transition shadow flex items-center gap-2 active:scale-95 disabled:opacity-50"
-                                >
-                                    <LogOut className="w-4 h-4" />
-                                    {punching ? 'Punching Out...' : 'Punch Out Shift'}
-                                </button>
+                                <div className="flex flex-col md:flex-row items-end md:items-center justify-between w-full gap-3">
+                                    <div className="text-xs text-gray-500 font-bold bg-slate-50 border border-gray-150 px-3 py-1.5 rounded-lg flex items-center gap-1.5">
+                                        <span className="w-1.5 h-1.5 bg-blue-500 rounded-full"></span>
+                                        Work Mode: <span className="text-slate-800 uppercase font-black">{todayPunch.work_mode || 'WFO'}</span>
+                                    </div>
+                                    <button
+                                        onClick={handlePunchOut}
+                                        disabled={punching}
+                                        className="bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs px-5 py-2.5 rounded-xl transition shadow flex items-center gap-2 active:scale-95 disabled:opacity-50 self-end"
+                                    >
+                                        <LogOut className="w-4 h-4" />
+                                        {punching ? 'Punching Out...' : 'Punch Out Shift'}
+                                    </button>
+                                </div>
                             ) : (
                                 <button
                                     disabled
@@ -194,11 +231,11 @@ export default function PortalTimeOffTab({
                             <table className="w-full">
                                 <thead className="bg-slate-50 border-b border-gray-150">
                                     <tr>
-                                        <th className="px-6 py-3 text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider">Date</th>
-                                        <th className="px-6 py-3 text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider">Requested Status</th>
-                                        <th className="px-6 py-3 text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider">Reason</th>
-                                        <th className="px-6 py-3 text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider">Status</th>
-                                        <th className="px-6 py-3 text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider">Reviewed By</th>
+                                        <th className="px-6 py-3 text-left text-[10px] font-bold text-gray-600 uppercase tracking-wider">Date</th>
+                                        <th className="px-6 py-3 text-left text-[10px] font-bold text-gray-600 uppercase tracking-wider">Requested Status</th>
+                                        <th className="px-6 py-3 text-left text-[10px] font-bold text-gray-600 uppercase tracking-wider">Reason</th>
+                                        <th className="px-6 py-3 text-left text-[10px] font-bold text-gray-600 uppercase tracking-wider">Status</th>
+                                        <th className="px-6 py-3 text-left text-[10px] font-bold text-gray-600 uppercase tracking-wider">Reviewed By</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-gray-100">
@@ -226,7 +263,7 @@ export default function PortalTimeOffTab({
                                         )
                                     }) : (
                                         <tr>
-                                            <td colSpan="5" className="px-6 py-8 text-center text-xs text-gray-400 italic">No regularization requests found.</td>
+                                            <td colSpan="5" className="px-6 py-8 text-center text-xs text-gray-600 italic">No regularization requests found.</td>
                                         </tr>
                                     )}
                                 </tbody>
@@ -263,7 +300,7 @@ export default function PortalTimeOffTab({
                                     onChange={(e) => setTimeOffStartDate(e.target.value)}
                                     className="px-2.5 py-1.5 rounded-lg border border-gray-200 text-xs font-medium text-gray-700"
                                 />
-                                <span className="text-xs text-gray-400">to</span>
+                                <span className="text-xs text-gray-600">to</span>
                                 <input
                                     type="date"
                                     value={timeOffEndDate}
@@ -318,7 +355,7 @@ export default function PortalTimeOffTab({
                                         )
                                     }) : (
                                         <tr>
-                                            <td colSpan="4" className="px-6 py-12 text-center text-xs text-gray-400 italic">No leave history found for selected filters.</td>
+                                            <td colSpan="4" className="px-6 py-12 text-center text-xs text-gray-600 italic">No leave history found for selected filters.</td>
                                         </tr>
                                     )}
                                 </tbody>
@@ -351,7 +388,7 @@ export default function PortalTimeOffTab({
                                     </div>
                                 )
                             }) : (
-                                <p className="text-xs text-gray-400 italic">No upcoming leave requests.</p>
+                                <p className="text-xs text-gray-600 italic">No upcoming leave requests.</p>
                             )}
                         </div>
                     </div>
@@ -471,7 +508,7 @@ export default function PortalTimeOffTab({
                                 </select>
                                 {leaveForm.type && (
                                     <p className="text-[10px] text-gray-450 mt-1.5 font-semibold">
-                                        Requested payable days: {calculateLeaveDays(leaveForm.startDate, leaveForm.endDate, holidays)}
+                                        Requested payable days: {applySandwichRule(leaveForm.startDate, leaveForm.endDate, holidays)}
                                     </p>
                                 )}
                             </div>
@@ -505,6 +542,29 @@ export default function PortalTimeOffTab({
                                     onChange={(e) => setLeaveForm({ ...leaveForm, reason: e.target.value })}
                                 ></textarea>
                             </div>
+                            {(leaveForm.type === 'Sick Leave' || leaveForm.type === 'Sick') && (
+                                <div className="animate-in fade-in duration-200">
+                                    <label className="block text-xs font-bold text-gray-500 mb-1">
+                                        Medical Certificate / Document {applySandwichRule(leaveForm.startDate, leaveForm.endDate, holidays) >= 3 ? '*' : ''}
+                                    </label>
+                                    <input
+                                        type="file"
+                                        accept=".pdf,.jpg,.jpeg,.png"
+                                        className="w-full rounded-xl border border-gray-200 px-4 py-2.5 text-xs font-semibold bg-slate-50 text-slate-700"
+                                        onChange={(e) => setLeaveForm({ ...leaveForm, medicalFile: e.target.files[0] })}
+                                        required={applySandwichRule(leaveForm.startDate, leaveForm.endDate, holidays) >= 3}
+                                    />
+                                    {applySandwichRule(leaveForm.startDate, leaveForm.endDate, holidays) >= 3 ? (
+                                        <p className="text-[9px] font-bold text-rose-500 uppercase mt-1">
+                                            ⚠️ A medical certificate is strictly mandatory for sick leave of 3 or more days.
+                                        </p>
+                                    ) : (
+                                        <p className="text-[9px] text-gray-450 mt-1">
+                                            Optional for sick leave under 3 days.
+                                        </p>
+                                    )}
+                                </div>
+                            )}
                         </div>
                         <div className="p-6 border-t border-gray-100 flex justify-end space-x-3 bg-gray-50/50">
                             <button

@@ -1,13 +1,23 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useToast } from '../context/ToastContext'
+import { logger } from '../lib/devLogger'
+import { applyCompanyFilter } from '../services/tenantScope'
+import { useReportData, useStatutoryData, useSaveGeneratedReport } from '../hooks/useReportsData'
+import Pagination from '../components/Pagination'
+import ReportRow from '../components/ReportRow'
 import jsPDF from 'jspdf'
-import * as XLSX from 'xlsx'
 import { downloadBlob, formatCurrency } from '../lib/payrollUtils'
 import { downloadECR, downloadECRSummary } from '../lib/ecrGenerator'
 import { downloadESIC, getESICSummary } from '../lib/esicGenerator'
 import { downloadSalaryRegister } from '../lib/salaryRegister'
+import { generateForm16PDF } from '../lib/form16Generator'
+import { getIndianFinancialYear } from '../lib/taxUtils'
+import { downloadGenericNEFT, downloadHDFCBulk, downloadSBISFMS } from '../lib/neftGenerator'
+import { downloadPTChallan, downloadLWFStatement } from '../lib/ptChallanGenerator'
+import { generate24QText, deriveQuarterFromMonth } from '../lib/tdsReturnGenerator'
+import { downloadTallyJournalXML, downloadTallyJournalCSV } from '../lib/tallyExporter'
 import { PageHeaderSkeleton, CardSkeleton, TableSkeleton } from '../components/ui/SkeletonLoader'
 import {
     LineChart,
@@ -25,15 +35,11 @@ import {
     Legend
 } from 'recharts'
 import {
-    FileText,
     Download,
     TrendingUp,
-    Users,
     CalendarCheck,
-    AlertCircle,
     Filter,
     Search,
-    ChevronDown,
     FileBarChart,
     ShieldCheck,
     Settings,
@@ -42,29 +48,20 @@ import {
     Landmark,
     Receipt,
     BookOpen,
-    FileBadge
+    FileBadge,
+    Database
 } from 'lucide-react'
 
 export default function Reports() {
     const navigate = useNavigate()
     const toast = useToast()
-    const [loading, setLoading] = useState(true)
-    const [payrollTrendData, setPayrollTrendData] = useState([])
-    const [attendanceData, setAttendanceData] = useState([])
-    const [departmentData, setDepartmentData] = useState([])
-    const [reports, setReports] = useState([])
-    const [metrics, setMetrics] = useState({
-        averageSalary: 0,
-        retentionRate: 0,
-        attendanceRate: 0,
-        complianceScore: 0,
-        activeEmployees: 0,
-        totalEmployees: 0
-    })
     const [searchTerm, setSearchTerm] = useState('')
     const [currentPage, setCurrentPage] = useState(1)
+    const [activeReportTab, setActiveReportTab] = useState('payroll')
     const [showComplianceModal, setShowComplianceModal] = useState(false)
     const [showCustomReportModal, setShowCustomReportModal] = useState(false)
+    const [selectedForm16EmployeeId, setSelectedForm16EmployeeId] = useState('')
+    const [generatingForm16, setGeneratingForm16] = useState(false)
     const [customReportForm, setCustomReportForm] = useState({
         type: '',
         dateRange: '',
@@ -79,60 +76,157 @@ export default function Reports() {
         d.setMonth(d.getMonth() - 1)
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
     })
-    const [payrollEmployees, setPayrollEmployees] = useState([])
-    const [esicSummary, setEsicSummary] = useState({ eligibleCount: 0, totalContribution: 0 })
-    const [companySettings, setCompanySettings] = useState({})
+    const [complianceState, setComplianceState] = useState('Maharashtra')
+    const [debitAccount, setDebitAccount] = useState('')
+    const [selectedQuarter, setSelectedQuarter] = useState('')
 
-    useEffect(() => {
-        fetchReportData()
-        fetchStatutoryData()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [])
+    // React Query Queries
+    const { data: reportData = {}, isLoading: loadingReportData } = useReportData()
+    const { data: statutoryData = {}, isLoading: loadingStatutory } = useStatutoryData(statutoryMonth)
 
-    useEffect(() => {
-        fetchStatutoryData()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [statutoryMonth])
+    const loading = loadingReportData || loadingStatutory
 
-    const fetchStatutoryData = async () => {
-        try {
-            // Company settings
-            const { data: settings } = await supabase.from('company_settings').select('*').single()
-            if (settings) setCompanySettings(settings)
+    // React Query Mutations
+    const saveReportMutation = useSaveGeneratedReport()
 
-            // Get payroll run for the selected month
-            const { data: run } = await supabase
-                .from('payroll_runs')
-                .select('*')
-                .eq('month_year', statutoryMonth + '-01')
-                .eq('status', 'Completed')
-                .maybeSingle()
+    // 1. Process Payroll Trend
+    const payrollTrendData = useMemo(() => {
+        const runs = reportData.payrollRuns || []
+        const trendData = runs.map(run => ({
+            month: new Date(run.month_year).toLocaleString('default', { month: 'short' }),
+            amount: Number(run.total_amount),
+            fullDate: run.month_year
+        }))
+        return trendData.slice(-6)
+    }, [reportData.payrollRuns])
 
-            if (run?.payroll_items) {
-                setPayrollEmployees(run.payroll_items)
-                setEsicSummary(getESICSummary(run.payroll_items))
-            } else {
-                // Fallback: fetch active employees for current month
-                const { data: emps } = await supabase
-                    .from('employees')
-                    .select('id, first_name, last_name, salary, department, uan_number, esi_number, pan_number, joining_date')
-                    .eq('status', 'active')
-                const mapped = (emps || []).map(e => ({
-                    ...e,
-                    name: `${e.first_name || ''} ${e.last_name || ''}`.trim(),
-                    grossSalary: e.salary,
-                    basicSalary: Math.round((e.salary || 0) * 0.4),
-                    uan: e.uan_number,
-                    esic_number: e.esi_number,
-                    pan: e.pan_number
-                }))
-                setPayrollEmployees(mapped)
-                setEsicSummary(getESICSummary(mapped))
+    // 2. Process Department Distribution
+    const departmentData = useMemo(() => {
+        const employees = reportData.employees || []
+        const deptCounts = {}
+        employees.forEach(emp => {
+            const dept = emp.department || 'Unknown'
+            deptCounts[dept] = (deptCounts[dept] || 0) + 1
+        })
+
+        const totalEmps = employees.length || 1
+        const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#f97316', '#8b5cf6', '#ec4899']
+
+        return Object.keys(deptCounts).map((dept, index) => ({
+            name: dept,
+            value: Math.round((deptCounts[dept] / totalEmps) * 100),
+            rawCount: deptCounts[dept],
+            color: COLORS[index % COLORS.length]
+        }))
+    }, [reportData.employees])
+
+    // 3. Process Attendance Trends & Key Metrics
+    const { attendanceData, metrics } = useMemo(() => {
+        const attendance = reportData.attendance || []
+        const employees = reportData.employees || []
+
+        const attMap = {}
+        attendance.forEach(record => {
+            const month = new Date(record.date).toLocaleString('default', { month: 'short' })
+            if (!attMap[month]) attMap[month] = { month, present: 0, absent: 0 }
+
+            if (record.status === 'present') attMap[month].present++
+            else if (record.status === 'absent') attMap[month].absent++
+        })
+
+        const activeEmployees = employees.filter(emp => emp.status !== 'terminated' && emp.status !== 'resigned')
+        const averageSalary = activeEmployees.length
+            ? activeEmployees.reduce((sum, emp) => sum + (Number(emp.salary) || 0), 0) / activeEmployees.length
+            : 0
+        const retentionRate = employees.length
+            ? (activeEmployees.length / employees.length) * 100
+            : 0
+        const present = attendance.filter(record => String(record.status).toLowerCase() === 'present').length
+        const attendanceRate = attendance.length ? (present / attendance.length) * 100 : 0
+        const employeesWithStatutory = activeEmployees.filter(emp => {
+            const structure = emp.salary_structure || {}
+            return Object.values(structure).some(component => component?.enabled && component?.category === 'deduction' && component?.is_statutory)
+        }).length
+        const complianceScore = activeEmployees.length ? (employeesWithStatutory / activeEmployees.length) * 100 : 0
+
+        return {
+            attendanceData: Object.values(attMap),
+            metrics: {
+                averageSalary,
+                retentionRate,
+                attendanceRate,
+                complianceScore,
+                activeEmployees: activeEmployees.length,
+                totalEmployees: employees.length || 0
             }
-        } catch (err) {
-            console.error('Error fetching statutory data:', err)
         }
-    }
+    }, [reportData.attendance, reportData.employees])
+
+    // 4. Combined Reports List
+    const reports = useMemo(() => {
+        const runs = reportData.payrollRuns || []
+        const generatedReports = reportData.generatedReports || []
+
+        const payrollReports = runs.map(run => ({
+            id: run.id,
+            name: `Payroll Summary - ${new Date(run.month_year).toLocaleString('default', { month: 'long', year: 'numeric' })}`,
+            type: 'Payroll',
+            description: `Monthly payroll summary for ${run.total_employees} employees`,
+            date: new Date(run.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+            status: 'available',
+            raw_data: run
+        }))
+
+        const otherReports = generatedReports.map(report => ({
+            id: report.id,
+            name: report.title,
+            type: report.report_type,
+            description: report.description,
+            date: new Date(report.generated_date || report.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+            status: report.status,
+            raw_data: report
+        }))
+
+        return [...payrollReports, ...otherReports].sort((a, b) =>
+            new Date(b.date.split(' ').reverse().join('-')) - new Date(a.date.split(' ').reverse().join('-'))
+        )
+    }, [reportData.payrollRuns, reportData.generatedReports])
+
+    // Statutory settings & employees
+    const companySettings = statutoryData.companySettings || {}
+    const payrollRun = statutoryData.payrollRun || null
+
+    const payrollEmployees = useMemo(() => {
+        if (payrollRun?.payroll_items) {
+            return payrollRun.payroll_items
+        }
+        // Fallback: fetch active employees for current month
+        const emps = reportData.employees || []
+        const active = emps.filter(e => e.status === 'active')
+        return active.map(e => ({
+            ...e,
+            name: `${e.first_name || ''} ${e.last_name || ''}`.trim(),
+            grossSalary: e.salary,
+            basicSalary: Math.round((e.salary || 0) * 0.4),
+            uan: e.uan_number,
+            esic_number: e.esi_number,
+            pan: e.pan_number
+        }))
+    }, [payrollRun, reportData.employees])
+
+    const activeEmployees = useMemo(() => {
+        return (reportData.employees || [])
+            .filter(e => e.status === 'active')
+            .map(e => ({
+                ...e,
+                name: `${e.first_name || ''} ${e.last_name || ''}`.trim()
+            }))
+            .sort((a, b) => a.name.localeCompare(b.name))
+    }, [reportData.employees])
+
+    const esicSummary = useMemo(() => {
+        return getESICSummary(payrollEmployees)
+    }, [payrollEmployees])
 
     const exportAllReports = () => {
         const headers = ['Report ID', 'Name', 'Type', 'Description', 'Date', 'Status']
@@ -152,152 +246,31 @@ export default function Reports() {
         link.click()
         document.body.removeChild(link)
     }
-
-    const fetchReportData = async () => {
-        try {
-            setLoading(true)
-
-            const sixMonthsAgo = new Date()
-            sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6)
-
-            // Fetch all independent data sets concurrently
-            const [runsRes, employeesRes, attendanceRes, reportsRes] = await Promise.all([
-                supabase
-                    .from('payroll_runs')
-                    .select('*')
-                    .eq('status', 'Completed')
-                    .order('month_year', { ascending: true }),
-                supabase
-                    .from('employees')
-                    .select('department, salary, salary_structure, status'),
-                supabase
-                    .from('attendance')
-                    .select('date, status')
-                    .gte('date', sixMonthsAgo.toISOString().split('T')[0]),
-                supabase
-                    .from('generated_reports')
-                    .select('*')
-                    .order('generated_date', { ascending: false })
-            ])
-
-            if (runsRes.error) throw runsRes.error
-            if (employeesRes.error) throw employeesRes.error
-            if (attendanceRes.error) throw attendanceRes.error
-
-            const runs = runsRes.data || []
-            const employees = employeesRes.data || []
-            const attendance = attendanceRes.data || []
-            const generatedReports = reportsRes.data || []
-            const reportsError = reportsRes.error
-
-            // 1. Process Payroll Trend
-            const trendData = runs.map(run => ({
-                month: new Date(run.month_year).toLocaleString('default', { month: 'short' }),
-                amount: Number(run.total_amount),
-                fullDate: run.month_year
-            }))
-            setPayrollTrendData(trendData.slice(-6))
-
-            // 2. Process Department Distribution
-            const deptCounts = {}
-            employees.forEach(emp => {
-                const dept = emp.department || 'Unknown'
-                deptCounts[dept] = (deptCounts[dept] || 0) + 1
+    const handleDownload = useCallback((report) => {
+        if (report.raw_data?.metadata?.format === 'Excel') {
+            import('xlsx').then((XLSX) => {
+                const wb = XLSX.utils.book_new()
+                const headers = ['Report', 'Type', 'Description', 'Date', 'Status']
+                const rows = [
+                    [report.name, report.type, report.description, report.date, report.status]
+                ]
+                const wsData = [headers, ...rows]
+                const ws = XLSX.utils.aoa_to_sheet(wsData)
+                XLSX.utils.book_append_sheet(wb, ws, 'Report')
+                XLSX.writeFile(wb, `${report.name.replace(/\s+/g, '_')}.xlsx`)
+            }).catch(err => {
+                console.error('Error importing xlsx:', err)
+                toast.error('Failed to export as Excel: xlsx library error')
             })
-
-            const totalEmps = employees.length || 1
-            const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#f97316', '#8b5cf6', '#ec4899']
-
-            const deptData = Object.keys(deptCounts).map((dept, index) => ({
-                name: dept,
-                value: Math.round((deptCounts[dept] / totalEmps) * 100),
-                rawCount: deptCounts[dept],
-                color: COLORS[index % COLORS.length]
-            }))
-            setDepartmentData(deptData)
-
-            // 3. Process Attendance Trends
-            const attMap = {}
-            attendance.forEach(record => {
-                const month = new Date(record.date).toLocaleString('default', { month: 'short' })
-                if (!attMap[month]) attMap[month] = { month, present: 0, absent: 0 }
-
-                if (record.status === 'present') attMap[month].present++
-                else if (record.status === 'absent') attMap[month].absent++
-            })
-            setAttendanceData(Object.values(attMap))
-
-            const activeEmployees = employees.filter(emp => emp.status !== 'terminated' && emp.status !== 'resigned')
-            const averageSalary = activeEmployees.length
-                ? activeEmployees.reduce((sum, emp) => sum + (Number(emp.salary) || 0), 0) / activeEmployees.length
-                : 0
-            const retentionRate = employees.length
-                ? (activeEmployees.length / employees.length) * 100
-                : 0
-            const present = attendance.filter(record => String(record.status).toLowerCase() === 'present').length
-            const attendanceRate = attendance.length ? (present / attendance.length) * 100 : 0
-            const employeesWithStatutory = activeEmployees.filter(emp => {
-                const structure = emp.salary_structure || {}
-                return Object.values(structure).some(component => component?.enabled && component?.category === 'deduction' && component?.is_statutory)
-            }).length
-            const complianceScore = activeEmployees.length ? (employeesWithStatutory / activeEmployees.length) * 100 : 0
-            setMetrics({
-                averageSalary,
-                retentionRate,
-                attendanceRate,
-                complianceScore,
-                activeEmployees: activeEmployees.length,
-                totalEmployees: employees.length || 0
-            })
-
-            // 4. Unified Reports List
-            // A. Payroll Reports
-            const payrollReports = runs.map(run => ({
-                id: run.id,
-                name: `Payroll Summary - ${new Date(run.month_year).toLocaleString('default', { month: 'long', year: 'numeric' })}`,
-                type: 'Payroll',
-                description: `Monthly payroll summary for ${run.total_employees} employees`,
-                date: new Date(run.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-                status: 'available',
-                raw_data: run // Store for download logic
-            }))
-
-            // B. Generated Reports
-            if (reportsError && reportsError.code !== '42P01') {
-                console.error('Error fetching generated reports:', reportsError)
-            }
-
-            const otherReports = generatedReports.map(report => ({
-                id: report.id,
-                name: report.title,
-                type: report.report_type,
-                description: report.description,
-                date: new Date(report.generated_date || report.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-                status: report.status,
-                raw_data: report
-            }))
-
-            // Combine and Sort by Date Descending
-            const allReports = [...payrollReports, ...otherReports].sort((a, b) =>
-                new Date(b.date.split(' ').reverse().join('-')) - new Date(a.date.split(' ').reverse().join('-'))
-            )
-
-            setReports(allReports)
-
-        } catch (error) {
-            console.error('Error fetching report data:', error)
-        } finally {
-            setLoading(false)
+            return
         }
-    }
 
-    const handleDownload = (report) => {
-        if (report.raw_data?.metadata?.format === 'CSV' || report.raw_data?.metadata?.format === 'Excel') {
+        if (report.raw_data?.metadata?.format === 'CSV') {
             const csv = [
                 ['Report', 'Type', 'Description', 'Date', 'Status'],
                 [report.name, report.type, report.description, report.date, report.status]
             ].map(row => row.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')).join('\n')
-            downloadBlob(csv, `${report.name.replace(/\s+/g, '_')}.${report.raw_data?.metadata?.format === 'Excel' ? 'xls' : 'csv'}`)
+            downloadBlob(csv, `${report.name.replace(/\s+/g, '_')}.csv`)
             return
         }
 
@@ -316,7 +289,7 @@ export default function Reports() {
         }
 
         pdf.save(`${report.name.replace(/\s+/g, '_')}.pdf`)
-    }
+    }, [])
 
     const handleGenerateCustomReport = async () => {
         const { type, dateRange, department, format, dataPoints } = customReportForm
@@ -331,8 +304,6 @@ export default function Reports() {
         }
 
         try {
-            setLoading(true)
-
             // ── 1. Compute date filter bounds ──
             const now = new Date()
             let fromDate = null
@@ -350,17 +321,8 @@ export default function Reports() {
             let rows = []
             let headers = []
 
-            const FIELD_MAP = {
-                'Employee Details': ['first_name', 'last_name', 'email', 'phone'],
-                'Basic Salary': ['salary'],
-                'Gross Salary': ['salary'],
-                'Designation': ['designation'],
-                'Department': ['department'],
-                'Joining Date': ['joining_date'],
-            }
-
             if (type === 'Employee') {
-                let query = supabase.from('employees').select('*').eq('status', 'active')
+                let query = applyCompanyFilter(supabase.from('employees').select('*')).eq('status', 'active')
                 if (department) query = query.eq('department', department)
 
                 const { data: emps, error } = await query
@@ -370,7 +332,7 @@ export default function Reports() {
                 const colMap = {
                     'Employee Details': (e) => [`${e.first_name} ${e.last_name}`, e.email || '', e.phone || ''],
                     'Basic Salary': (e) => [e.salary || 0],
-                    'Gross Salary': (e) => [e.salary || 0],
+                    'Gross Salary': (e) => [(Number(e.salary || 0) + Number(e.salary_allowances || 0))],
                     'Designation': (e) => [e.designation || ''],
                     'Department': (e) => [e.department || ''],
                     'Joining Date': (e) => [e.joining_date || ''],
@@ -390,11 +352,13 @@ export default function Reports() {
                     ...dataPoints.flatMap(dp => colMap[dp] ? colMap[dp](e) : [''])
                 ])
             } else if (type === 'Payroll') {
-                let query = supabase
-                    .from('payroll_items')
-                    .select(`id, basic_salary, total_allowances, total_deductions, net_salary, attendance_days,
-                        employees(first_name, last_name, employee_id, department, designation),
-                        payroll_runs(month_year)`)
+                let query = applyCompanyFilter(
+                    supabase
+                        .from('payroll_items')
+                        .select(`id, basic_salary, total_allowances, total_deductions, net_salary, attendance_days,
+                            employees(first_name, last_name, employee_id, department, designation),
+                            payroll_runs(month_year)`)
+                )
                 if (fromDate) query = query.gte('created_at', fromDate)
 
                 const { data: items, error } = await query
@@ -432,9 +396,11 @@ export default function Reports() {
                     ...dataPoints.flatMap(dp => payColMap[dp] ? payColMap[dp](i) : [''])
                 ])
             } else if (type === 'Attendance') {
-                let query = supabase
-                    .from('attendance')
-                    .select('date, status, check_in, check_out, remarks, employees(first_name, last_name, employee_id, department)')
+                let query = applyCompanyFilter(
+                    supabase
+                        .from('attendance')
+                        .select('date, status, check_in, check_out, remarks, employees(first_name, last_name, employee_id, department)')
+                )
                 if (fromDate) query = query.gte('date', fromDate)
 
                 const { data: attData, error } = await query
@@ -471,10 +437,10 @@ export default function Reports() {
             const fileName = `${title}_${dateStr}`
 
             if (format === 'Excel') {
+                const XLSX = await import('xlsx')
                 const wb = XLSX.utils.book_new()
                 const wsData = [headers, ...rows]
                 const ws = XLSX.utils.aoa_to_sheet(wsData)
-                // Auto column widths
                 ws['!cols'] = headers.map((h, i) => ({
                     wch: Math.max(h.length + 2, ...rows.map(r => String(r[i] || '').length + 2))
                 }))
@@ -490,13 +456,11 @@ export default function Reports() {
                 document.body.appendChild(a); a.click(); document.body.removeChild(a)
                 URL.revokeObjectURL(url)
             } else {
-                // PDF
                 const pdf = new jsPDF({ orientation: rows.length > 0 && headers.length > 6 ? 'landscape' : 'portrait' })
                 pdf.setFontSize(14)
                 pdf.text(`${type} Report — ${dateRange}`, 14, 18)
                 pdf.setFontSize(8)
                 pdf.text(`Generated: ${new Date().toLocaleDateString()} | ${rows.length} records`, 14, 26)
-                // Simple table
                 const cellW = Math.floor((pdf.internal.pageSize.getWidth() - 28) / headers.length)
                 let y = 36
                 pdf.setFillColor(30, 41, 59); pdf.setTextColor(255)
@@ -512,7 +476,7 @@ export default function Reports() {
             }
 
             // ── 4. Save to generated_reports table ──
-            await supabase.from('generated_reports').insert({
+            await saveReportMutation.mutateAsync({
                 title: `Custom ${type} Report - ${dateRange}`,
                 report_type: type,
                 description: `Custom report for ${department || 'All Departments'} (${format}) — ${rows.length} records`,
@@ -521,16 +485,185 @@ export default function Reports() {
                 generated_date: new Date().toISOString()
             })
 
-            await fetchReportData()
             setShowCustomReportModal(false)
             setCustomReportForm({ type: '', dateRange: '', department: '', format: '', dataPoints: [] })
             toast.success(`Custom ${type} report exported as ${format} with ${rows.length} records.`)
 
         } catch (error) {
-            console.error('Error generating custom report:', error)
+            logger.error('Error generating custom report:', error)
             toast.error('Failed to generate report: ' + (error.message || 'Unknown error'))
+        }
+    }
+
+    const handleGenerateForm16 = async () => {
+        if (!selectedForm16EmployeeId) {
+            toast.warning('Please select an employee first.')
+            return
+        }
+
+        try {
+            setGeneratingForm16(true)
+            
+            // 1. Determine selected employee and financial year
+            const emp = reportData.employees?.find(e => e.id === selectedForm16EmployeeId)
+            if (!emp) {
+                toast.error('Employee not found.')
+                return
+            }
+            
+            // Compute financial year from the statutory month selected in UI
+            const fy = getIndianFinancialYear(statutoryMonth)
+            
+            // 2. Fetch tax declaration for the selected employee and financial year
+            const { data: declarations, error: declError } = await applyCompanyFilter(
+                supabase
+                    .from('tax_declarations')
+                    .select('*')
+            )
+                .eq('employee_id', selectedForm16EmployeeId)
+                .eq('financial_year', fy)
+            
+            if (declError) throw declError
+            
+            // Find approved first, or default to any, or empty
+            const declaration = declarations?.find(d => d.status === 'approved') || declarations?.[0] || { regime: 'new' }
+            
+            // 3. Fetch payroll runs for the employee in the financial year
+            const fyStart = `${fy.split('-')[0]}-04-01`
+            const fyEnd = `${Number(fy.split('-')[0]) + 1}-03-31`
+            
+            const { data: dbItems, error: itemsError } = await applyCompanyFilter(
+                supabase
+                    .from('payroll_items')
+                    .select(`
+                        basic_salary,
+                        total_allowances,
+                        total_deductions,
+                        net_salary,
+                        attendance_days,
+                        breakdown,
+                        payroll_runs!inner (
+                            month_year,
+                            status
+                        )
+                    `)
+            )
+                .eq('employee_id', selectedForm16EmployeeId)
+                .eq('payroll_runs.status', 'Completed')
+                .gte('payroll_runs.month_year', fyStart)
+                .lte('payroll_runs.month_year', fyEnd)
+            
+            if (itemsError) throw itemsError
+            
+            if (!dbItems || dbItems.length === 0) {
+                toast.warning(`No completed payroll records found for ${emp.first_name} ${emp.last_name} in the selected financial year ${fy}. Please select a payroll month within a financial year that has completed runs (e.g., select March 2026 for FY 2025-26).`)
+                setGeneratingForm16(false)
+                return
+            }
+            
+            // 4. Map db items to structure expected by generateForm16PDF
+            const payrollRuns = (dbItems || []).map(item => {
+                const basic = Number(item.basic_salary) || 0
+                const grossSalary = Number(item.breakdown?.gross) || (Number(item.basic_salary) + Number(item.total_allowances)) || 0
+                const earnings = item.breakdown?.earnings || []
+                
+                const findEarning = (keySubstrs) => {
+                    const found = earnings.find(e => keySubstrs.some(sub => e.name?.toLowerCase().includes(sub)))
+                    return found ? Number(found.amount) || 0 : 0
+                }
+                
+                const hra = findEarning(['house rent', 'hra'])
+                const conveyance = findEarning(['conveyance'])
+                const medical = findEarning(['medical'])
+                const specialAllowance = findEarning(['special'])
+                const lta = findEarning(['leave travel', 'lta'])
+                
+                let otherAllowance = 0
+                earnings.forEach(e => {
+                    const name = e.name?.toLowerCase() || ''
+                    if (name.includes('basic') || name.includes('house rent') || name.includes('hra') || 
+                        name.includes('conveyance') || name.includes('medical') || name.includes('special') || 
+                        name.includes('leave travel') || name.includes('lta') || name.includes('overtime')) {
+                        return
+                    }
+                    otherAllowance += Number(e.amount) || 0
+                })
+                
+                const deductions = item.breakdown?.deductions || []
+                const tdsObj = deductions.find(d => d.name?.toLowerCase().includes('tds') || d.name?.toLowerCase().includes('tax') || d.name?.toLowerCase().includes('income tax'))
+                const tds = tdsObj ? Number(tdsObj.amount) || 0 : 0
+                
+                return {
+                    basicSalary: basic,
+                    hra,
+                    conveyance,
+                    medical,
+                    specialAllowance,
+                    lta,
+                    otherAllowance,
+                    grossSalary,
+                    tds
+                }
+            })
+            
+            // 5. Build employee and company objects
+            const mappedEmployee = {
+                ...emp,
+                name: `${emp.first_name || ''} ${emp.last_name || ''}`.trim(),
+                pan: emp.pan_number || 'NOT AVAILABLE',
+                designation: emp.designation || '',
+                joining_date: emp.joining_date || ''
+            }
+            
+            const mappedCompany = {
+                name: companySettings.company_name || companySettings.name || 'Acme Solutions',
+                pan: companySettings.pan_number || companySettings.pan || 'NOT AVAILABLE',
+                tan: companySettings.tan_number || companySettings.tan || 'NOT AVAILABLE',
+                address: companySettings.address || [companySettings.city, companySettings.state, companySettings.pincode].filter(Boolean).join(', ') || 'NOT AVAILABLE'
+            }
+            
+            // 6. Generate and download pdf
+            generateForm16PDF({
+                employee: mappedEmployee,
+                company: mappedCompany,
+                declaration,
+                payrollRuns,
+                financialYear: fy,
+                download: true
+            })
+            
+            toast.success(`Form 16 generated successfully for ${mappedEmployee.name}.`)
+        } catch (error) {
+            logger.error('Error generating Form 16:', error)
+            toast.error('Failed to generate Form 16: ' + (error.message || 'Unknown error'))
         } finally {
-            setLoading(false)
+            setGeneratingForm16(false)
+        }
+    }
+
+    const handleTallyExport = (format = 'xml') => {
+        if (!payrollEmployees.length) {
+            toast.warning('No payroll data for selected month.')
+            return
+        }
+
+        try {
+            const options = {
+                companyName: companySettings.company_name || companySettings.name || '',
+                period: statutoryMonth,
+                periodLabel: new Date(statutoryMonth).toLocaleString('default', { month: 'long', year: 'numeric' })
+            }
+
+            if (format === 'xml') {
+                downloadTallyJournalXML(payrollEmployees, options)
+                toast.success('Tally XML journal downloaded successfully.')
+            } else {
+                downloadTallyJournalCSV(payrollEmployees, options)
+                toast.success('Tally CSV journal downloaded successfully.')
+            }
+        } catch (err) {
+            logger.error('Tally export failed:', err)
+            toast.error('Tally export failed: ' + err.message)
         }
     }
 
@@ -562,7 +695,7 @@ export default function Reports() {
         <div className="space-y-6 animate-in fade-in duration-500">
             {/* Header */}
             <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-                <div className="flex justify-between items-center">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
                     <div>
                         <p className="text-gray-500 mt-1">Generate and view payroll, compliance, and analytical reports</p>
                     </div>
@@ -574,18 +707,35 @@ export default function Reports() {
                         <span className="font-semibold text-sm">Export All Reports</span>
                     </button>
                 </div>
+                <div className="mt-5 inline-flex flex-wrap items-center gap-1 rounded-xl border border-gray-200 bg-slate-50 p-1">
+                    {[
+                        { key: 'payroll', label: 'Payroll' },
+                        { key: 'compliance', label: 'Compliance' },
+                        { key: 'hr', label: 'HR' },
+                        { key: 'custom', label: 'Custom' }
+                    ].map(tab => (
+                        <button
+                            key={tab.key}
+                            type="button"
+                            onClick={() => setActiveReportTab(tab.key)}
+                            className={`px-4 py-2 rounded-lg text-sm font-bold transition ${activeReportTab === tab.key ? 'bg-slate-900 text-white shadow-sm' : 'text-gray-600 hover:text-slate-900 hover:bg-white'}`}
+                        >
+                            {tab.label}
+                        </button>
+                    ))}
+                </div>
             </div>
 
             {/* Charts Grid */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className={`grid grid-cols-1 lg:grid-cols-3 gap-6 ${activeReportTab === 'compliance' || activeReportTab === 'custom' ? 'hidden' : ''}`}>
                 {/* Monthly Payroll Trend */}
-                <div className="col-span-1 lg:col-span-2 bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
+                <div className={`col-span-1 lg:col-span-2 min-w-0 bg-white p-6 rounded-2xl border border-gray-100 shadow-sm ${activeReportTab !== 'payroll' ? 'hidden' : ''}`}>
                     <div className="flex items-center space-x-2 mb-6">
                         <TrendingUp className="w-5 h-5 text-gray-400" />
                         <h3 className="font-bold text-gray-800">Monthly Payroll Trend</h3>
                     </div>
-                    <div className="h-64 mt-4">
-                        <ResponsiveContainer width="100%" height="100%">
+                    <div className="h-64 w-full min-w-0 mt-4">
+                        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                             <LineChart data={payrollTrendData}>
                                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                                 <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} dy={10} />
@@ -607,10 +757,10 @@ export default function Reports() {
                 </div>
 
                 {/* Department Distribution */}
-                <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
+                <div className={`min-w-0 bg-white p-6 rounded-2xl border border-gray-100 shadow-sm ${activeReportTab !== 'hr' ? 'hidden' : ''}`}>
                     <h3 className="font-bold text-gray-800 mb-6">Department-wise Employee Distribution</h3>
-                    <div className="h-48 mt-4">
-                        <ResponsiveContainer width="100%" height="100%">
+                    <div className="h-48 w-full min-w-0 mt-4">
+                        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                             <PieChart>
                                 <Pie
                                     data={departmentData}
@@ -640,13 +790,13 @@ export default function Reports() {
                 </div>
 
                 {/* Attendance Trends */}
-                <div className="col-span-1 lg:col-span-2 bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
+                <div className={`col-span-1 lg:col-span-2 min-w-0 bg-white p-6 rounded-2xl border border-gray-100 shadow-sm ${activeReportTab !== 'hr' ? 'hidden' : ''}`}>
                     <div className="flex items-center space-x-2 mb-6">
                         <CalendarCheck className="w-5 h-5 text-gray-400" />
                         <h3 className="font-bold text-gray-800">Attendance Trends</h3>
                     </div>
-                    <div className="h-64 mt-4">
-                        <ResponsiveContainer width="100%" height="100%">
+                    <div className="h-64 w-full min-w-0 mt-4">
+                        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                             <BarChart data={attendanceData} barSize={12}>
                                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                                 <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} dy={10} />
@@ -661,7 +811,7 @@ export default function Reports() {
                 </div>
 
                 {/* Key Metrics */}
-                <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between border-l-[6px] border-l-slate-900 group transition-all duration-300 hover:shadow-md">
+                <div className={`bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between border-l-[6px] border-l-slate-900 group transition-all duration-300 hover:shadow-md ${activeReportTab !== 'hr' ? 'hidden' : ''}`}>
                     <div className="flex items-center space-x-2 mb-6">
                         <TrendingUp className="w-5 h-5 text-slate-400 group-hover:scale-110 transition-transform" />
                         <h3 className="text-[11px] font-bold text-gray-900 uppercase tracking-widest">Key Metrics Overview</h3>
@@ -686,7 +836,7 @@ export default function Reports() {
                                 <p className="text-sm text-gray-500 font-medium">Avg. Attendance</p>
                                 <p className="text-2xl font-bold text-gray-900 mt-1">{metrics.attendanceRate.toFixed(1)}%</p>
                             </div>
-                            <span className="text-xs font-bold text-gray-400 bg-gray-50 px-2 py-1 rounded-full">6 mo</span>
+                            <span className="text-xs font-bold text-gray-600 bg-gray-50 px-2 py-1 rounded-full">6 mo</span>
                         </div>
                         <div className="flex justify-between items-end">
                             <div>
@@ -700,7 +850,7 @@ export default function Reports() {
             </div>
 
             {/* Reports Section */}
-            <div id="reports-table" className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+            <div id="reports-table" className={`bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden ${activeReportTab !== 'payroll' && activeReportTab !== 'custom' ? 'hidden' : ''}`}>
                 <div className="p-6 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <div className="flex items-center space-x-2">
                         <h2 className="text-lg font-bold text-gray-800">Available Reports</h2>
@@ -743,47 +893,11 @@ export default function Reports() {
                                 </tr>
                             ) : (
                                 currentReports.map((report) => (
-                                    <tr key={report.id} className="hover:bg-gray-50/80 transition-colors group">
-                                        <td className="px-6 py-4">
-                                            <div className="flex items-center gap-3">
-                                                <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center text-blue-600">
-                                                    <FileText className="w-4 h-4" />
-                                                </div>
-                                                <div>
-                                                    <p className="text-sm font-bold text-gray-900 group-hover:text-blue-600 transition-colors">{report.name}</p>
-                                                    <p className="text-xs text-gray-400 font-medium">{report.id}</p>
-                                                </div>
-                                            </div>
-                                        </td>
-                                        <td className="px-6 py-4">
-                                            <span className="text-xs font-semibold text-slate-600 bg-slate-100 px-2 py-1 rounded-md">
-                                                {report.type}
-                                            </span>
-                                        </td>
-                                        <td className="px-6 py-4">
-                                            <p className="text-sm text-gray-500 font-medium truncate max-w-xs">{report.description}</p>
-                                        </td>
-                                        <td className="px-6 py-4">
-                                            <p className="text-sm text-gray-600 font-semibold">{report.date}</p>
-                                        </td>
-                                        <td className="px-6 py-4">
-                                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold capitalize
-                                                ${report.status === 'available' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
-                                                {report.status}
-                                            </span>
-                                        </td>
-                                        <td className="px-6 py-4 text-right">
-                                            <div className="flex items-center justify-end gap-2">
-                                                <button
-                                                    onClick={() => handleDownload(report)}
-                                                    className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
-                                                    title="Download Report"
-                                                >
-                                                    <Download className="w-4 h-4" />
-                                                </button>
-                                            </div>
-                                        </td>
-                                    </tr>
+                                    <ReportRow
+                                        key={report.id}
+                                        report={report}
+                                        handleDownload={handleDownload}
+                                    />
                                 ))
                             )}
                         </tbody>
@@ -792,28 +906,13 @@ export default function Reports() {
                 {filteredReports.length > reportsPerPage && (
                     <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-between text-sm text-gray-500">
                         <span>Page {currentPage} of {totalPages}</span>
-                        <div className="flex gap-2">
-                            <button
-                                onClick={() => setCurrentPage(page => Math.max(1, page - 1))}
-                                disabled={currentPage === 1}
-                                className="px-3 py-1.5 border border-gray-200 rounded-lg font-bold disabled:opacity-40 hover:bg-gray-50"
-                            >
-                                Previous
-                            </button>
-                            <button
-                                onClick={() => setCurrentPage(page => Math.min(totalPages, page + 1))}
-                                disabled={currentPage === totalPages}
-                                className="px-3 py-1.5 border border-gray-200 rounded-lg font-bold disabled:opacity-40 hover:bg-gray-50"
-                            >
-                                Next
-                            </button>
-                        </div>
+                        <Pagination page={currentPage - 1} totalPages={totalPages} onPageChange={(p) => setCurrentPage(p + 1)} />
                     </div>
                 )}
             </div>
 
             {/* ── Statutory Compliance Exports ─────────────────────────── */}
-            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+            <div className={`bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden ${activeReportTab !== 'compliance' ? 'hidden' : ''}`}>
                 <div className="p-6 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <div className="flex items-center gap-3">
                         <div className="w-10 h-10 rounded-xl bg-slate-900 flex items-center justify-center">
@@ -838,7 +937,7 @@ export default function Reports() {
                     </div>
                 </div>
 
-                <div className="p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     <div className="border border-gray-100 rounded-2xl p-5 hover:border-blue-200 hover:shadow-md transition-all group">
                         <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
                             <Building2 className="w-5 h-5" />
@@ -914,25 +1013,226 @@ export default function Reports() {
                         </button>
                     </div>
 
-                    <div className="border border-gray-100 rounded-2xl p-5 hover:border-amber-200 hover:shadow-md transition-all group">
-                        <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-                            <FileBadge className="w-5 h-5" />
+                    <div className="border border-gray-100 rounded-2xl p-5 hover:border-amber-200 hover:shadow-md transition-all group flex flex-col justify-between">
+                        <div>
+                            <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                                <FileBadge className="w-5 h-5" />
+                            </div>
+                            <h3 className="text-sm font-bold text-gray-800">Form 16</h3>
+                            <p className="text-xs text-gray-500 mt-1 mb-4">TDS certificate (Part A + B) generated per employee from Tax Declarations</p>
                         </div>
-                        <h3 className="text-sm font-bold text-gray-800">Form 16</h3>
-                        <p className="text-xs text-gray-500 mt-1 mb-4">TDS certificate (Part A + B) generated per employee from Tax Declarations</p>
-                        <button
-                            onClick={() => navigate('/tax-declarations')}
-                            className="w-full py-2 bg-amber-500 text-white rounded-lg text-xs font-bold hover:bg-amber-600 transition-colors flex items-center justify-center gap-2"
-                        >
-                            <Receipt className="w-3.5 h-3.5" /> Go to Tax Declarations
-                        </button>
+                        <div className="space-y-3">
+                            <div className="relative">
+                                <label htmlFor="form16-employee-select" className="sr-only">Select Employee</label>
+                                <select
+                                    id="form16-employee-select"
+                                    value={selectedForm16EmployeeId}
+                                    onChange={(e) => setSelectedForm16EmployeeId(e.target.value)}
+                                    className="w-full px-3 py-2 border border-gray-200 rounded-xl text-xs font-semibold text-gray-700 bg-gray-50 focus:ring-2 focus:ring-amber-100 focus:border-amber-400 transition-all focus:outline-none"
+                                >
+                                    <option value="">Select Employee</option>
+                                    {activeEmployees.map(emp => (
+                                        <option key={emp.id} value={emp.id}>{emp.name}</option>
+                                    ))}
+                                </select>
+                            </div>
+                            <button
+                                onClick={handleGenerateForm16}
+                                disabled={!selectedForm16EmployeeId || generatingForm16}
+                                className="w-full py-2 bg-amber-500 text-white rounded-lg text-xs font-bold hover:bg-amber-600 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-amber-100"
+                            >
+                                {generatingForm16 ? (
+                                    <>
+                                        <div className="animate-spin rounded-full h-3.5 w-3.5 border-2 border-white/50 border-t-white" />
+                                        <span>Generating...</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Receipt className="w-3.5 h-3.5" /> Generate Form 16
+                                    </>
+                                )}
+                            </button>
+                            <button
+                                onClick={() => navigate('/tax-declarations')}
+                                className="w-full py-1 text-slate-500 hover:text-slate-800 transition-colors flex items-center justify-center gap-1.5 text-[10px] font-bold"
+                            >
+                                Go to Tax Declarations
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="border border-gray-100 rounded-2xl p-5 hover:border-slate-300 hover:shadow-md transition-all group flex flex-col justify-between">
+                        <div>
+                            <div className="w-10 h-10 rounded-xl bg-slate-50 text-slate-700 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                                <Landmark className="w-5 h-5" />
+                            </div>
+                            <h3 className="text-sm font-bold text-gray-800">Bank Transfer (NEFT)</h3>
+                            <p className="text-xs text-gray-500 mt-1 mb-4">Generate bulk payment upload sheets for Indian corporate banking platforms</p>
+                        </div>
+                        <div className="space-y-2">
+                            <div className="relative">
+                                <input
+                                    type="text"
+                                    placeholder="Company Debit Account No (SBI)"
+                                    value={debitAccount}
+                                    onChange={(e) => setDebitAccount(e.target.value)}
+                                    className="w-full px-3 py-1.5 border border-gray-200 rounded-xl text-xs font-semibold text-gray-700 bg-gray-50 focus:ring-2 focus:ring-slate-100 focus:border-slate-400 focus:outline-none"
+                                />
+                            </div>
+                            <div className="grid grid-cols-3 gap-1">
+                                <button
+                                    onClick={() => {
+                                        if (!payrollEmployees.length) { toast.warning('No payroll data.'); return }
+                                        downloadGenericNEFT(payrollEmployees, statutoryMonth)
+                                        toast.success('Generic NEFT CSV downloaded.')
+                                    }}
+                                    className="py-1.5 bg-slate-800 text-white rounded-lg text-[10px] font-bold hover:bg-slate-900 transition-colors"
+                                >
+                                    Generic
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        if (!payrollEmployees.length) { toast.warning('No payroll data.'); return }
+                                        downloadHDFCBulk(payrollEmployees, statutoryMonth)
+                                        toast.success('HDFC Bulk CSV downloaded.')
+                                    }}
+                                    className="py-1.5 bg-blue-600 text-white rounded-lg text-[10px] font-bold hover:bg-blue-700 transition-colors"
+                                >
+                                    HDFC
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        if (!payrollEmployees.length) { toast.warning('No payroll data.'); return }
+                                        if (!debitAccount.trim()) { toast.warning('SBI requires debit account number.'); return }
+                                        downloadSBISFMS(payrollEmployees, statutoryMonth, debitAccount)
+                                        toast.success('SBI SFMS file downloaded.')
+                                    }}
+                                    className="py-1.5 bg-green-600 text-white rounded-lg text-[10px] font-bold hover:bg-green-700 transition-colors"
+                                >
+                                    SBI
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="border border-gray-100 rounded-2xl p-5 hover:border-purple-200 hover:shadow-md transition-all group flex flex-col justify-between">
+                        <div>
+                            <div className="w-10 h-10 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                                <Database className="w-5 h-5" />
+                            </div>
+                            <h3 className="text-sm font-bold text-gray-800">Tally ERP Export</h3>
+                            <p className="text-xs text-gray-500 mt-1 mb-4">Export monthly payroll journal entries as XML or CSV for direct import into Tally ERP</p>
+                        </div>
+                        <div className="flex flex-col gap-2">
+                            <button
+                                onClick={() => handleTallyExport('xml')}
+                                className="w-full py-2 bg-purple-600 text-white rounded-lg text-xs font-bold hover:bg-purple-700 transition-colors flex items-center justify-center gap-2 shadow-lg shadow-purple-100"
+                            >
+                                <Download className="w-3.5 h-3.5" /> Download XML
+                            </button>
+                            <button
+                                onClick={() => handleTallyExport('csv')}
+                                className="w-full py-2 border border-gray-200 text-gray-600 rounded-lg text-xs font-bold hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
+                            >
+                                <Download className="w-3.5 h-3.5" /> Download CSV
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="border border-gray-100 rounded-2xl p-5 hover:border-teal-200 hover:shadow-md transition-all group flex flex-col justify-between">
+                        <div>
+                            <div className="w-10 h-10 rounded-xl bg-teal-50 text-teal-600 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                                <Receipt className="w-5 h-5" />
+                            </div>
+                            <h3 className="text-sm font-bold text-gray-800">State PT & LWF</h3>
+                            <p className="text-xs text-gray-500 mt-1 mb-4">Download Professional Tax and Labour Welfare Fund reconciliation statements</p>
+                        </div>
+                        <div className="space-y-2">
+                            <div>
+                                <select
+                                    value={complianceState}
+                                    onChange={(e) => setComplianceState(e.target.value)}
+                                    className="w-full px-3 py-1.5 border border-gray-200 rounded-xl text-xs font-semibold text-gray-700 bg-gray-50 focus:ring-2 focus:ring-teal-100 focus:border-teal-400 focus:outline-none"
+                                >
+                                    {['Andaman and Nicobar Islands', 'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chandigarh', 'Chhattisgarh', 'Dadra and Nagar Haveli and Daman and Diu', 'Delhi', 'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jammu and Kashmir', 'Jharkhand', 'Karnataka', 'Kerala', 'Ladakh', 'Lakshadweep', 'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha', 'Puducherry', 'Punjab', 'Rajasthan', 'Sikkim', 'Tamil Nadu', 'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal'].map(state => (
+                                        <option key={state} value={state}>{state}</option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div className="grid grid-cols-2 gap-1.5">
+                                <button
+                                    onClick={() => {
+                                        if (!payrollEmployees.length) { toast.warning('No payroll data.'); return }
+                                        downloadPTChallan(payrollEmployees, complianceState, statutoryMonth)
+                                        toast.success(`${complianceState} PT Statement downloaded.`)
+                                    }}
+                                    className="py-1.5 bg-teal-600 text-white rounded-lg text-[10px] font-bold hover:bg-teal-700 transition-colors"
+                                >
+                                    PT Statement
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        if (!payrollEmployees.length) { toast.warning('No payroll data.'); return }
+                                        downloadLWFStatement(payrollEmployees, complianceState, statutoryMonth)
+                                        toast.success(`${complianceState} LWF Statement downloaded.`)
+                                    }}
+                                    className="py-1.5 bg-indigo-600 text-white rounded-lg text-[10px] font-bold hover:bg-indigo-700 transition-colors"
+                                >
+                                    LWF Statement
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="border border-gray-100 rounded-2xl p-5 hover:border-orange-200 hover:shadow-md transition-all group flex flex-col justify-between">
+                        <div>
+                            <div className="w-10 h-10 rounded-xl bg-orange-50 text-orange-600 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                                <Receipt className="w-5 h-5" />
+                            </div>
+                            <h3 className="text-sm font-bold text-gray-800">NSDL 24Q TDS Return</h3>
+                            <p className="text-xs text-gray-500 mt-1 mb-4">Export government-compliant quarterly plain-text return file for Section 192 TDS filing</p>
+                        </div>
+                        <div className="space-y-2">
+                            <div className="relative mb-2">
+                                <label htmlFor="tds-quarter-select" className="sr-only">TDS Quarter Override</label>
+                                <select
+                                    id="tds-quarter-select"
+                                    value={selectedQuarter}
+                                    onChange={e => setSelectedQuarter(e.target.value)}
+                                    className="w-full px-3 py-1.5 border border-gray-200 rounded-xl text-xs font-semibold text-gray-700 bg-gray-50 focus:ring-2 focus:ring-orange-100 focus:border-orange-400 focus:outline-none"
+                                >
+                                    <option value="">Auto-detect from Month</option>
+                                    <option value="Q1">Q1 (Apr–Jun)</option>
+                                    <option value="Q2">Q2 (Jul–Sep)</option>
+                                    <option value="Q3">Q3 (Oct–Dec)</option>
+                                    <option value="Q4">Q4 (Jan–Mar)</option>
+                                </select>
+                            </div>
+                            <button
+                                onClick={() => {
+                                    if (!payrollEmployees.length) { toast.warning('No payroll data.'); return }
+                                    const monthPart = statutoryMonth.split('-')[1]
+                                    const monthNum = parseInt(monthPart, 10)
+                                    const derivedQ = deriveQuarterFromMonth(monthNum)
+                                    const quarter = selectedQuarter || derivedQ
+
+                                    const text = generate24QText(companySettings, payrollEmployees, quarter)
+                                    const blob = new Blob([text], { type: 'text/plain;charset=utf-8;' })
+                                    downloadBlob(blob, `TDS_24Q_${quarter}_${statutoryMonth}.txt`)
+                                    toast.success(`NSDL 24Q TDS return file downloaded for ${quarter}.`)
+                                }}
+                                className="w-full py-2 bg-orange-600 text-white rounded-lg text-xs font-bold hover:bg-orange-700 transition-colors flex items-center justify-center gap-2 shadow-lg shadow-orange-100"
+                            >
+                                <Download className="w-3.5 h-3.5" /> Export 24Q TDS (.txt)
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
 
             {/* Quick Actions Footer */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div onClick={() => navigate('/payroll-processing')} className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all duration-300 cursor-pointer group border-l-[6px] border-l-blue-600 hover:scale-[1.02]">
+                <div onClick={() => navigate('/payroll-processing')} className={`bg-white p-6 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all duration-300 cursor-pointer group border-l-[6px] border-l-blue-600 hover:scale-[1.02] ${activeReportTab !== 'payroll' ? 'hidden' : ''}`}>
                     <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
                         <FileBarChart className="w-5 h-5" />
                     </div>
@@ -940,7 +1240,7 @@ export default function Reports() {
                     <p className="text-xs text-gray-500 font-medium mt-1">Generate current month payroll summary instantly</p>
                     <button onClick={(e) => { e.stopPropagation(); navigate('/payroll-processing') }} className="mt-4 w-full py-2 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 transition-colors">Generate Report</button>
                 </div>
-                <div onClick={() => setShowComplianceModal(true)} className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all duration-300 cursor-pointer group border-l-[6px] border-l-emerald-600 hover:scale-[1.02]">
+                <div onClick={() => setShowComplianceModal(true)} className={`bg-white p-6 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all duration-300 cursor-pointer group border-l-[6px] border-l-emerald-600 hover:scale-[1.02] ${activeReportTab !== 'compliance' ? 'hidden' : ''}`}>
                     <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
                         <ShieldCheck className="w-5 h-5" />
                     </div>
@@ -948,13 +1248,13 @@ export default function Reports() {
                     <p className="text-xs text-gray-500 font-medium mt-1">View all compliance reports in one place</p>
                     <button onClick={(e) => { e.stopPropagation(); setShowComplianceModal(true) }} className="mt-4 w-full py-2 border border-gray-200 text-gray-600 rounded-lg text-xs font-bold hover:bg-gray-50 transition-colors">View Dashboard</button>
                 </div>
-                <div onClick={() => setShowCustomReportModal(true)} className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all duration-300 cursor-pointer group border-l-[6px] border-l-violet-600 hover:scale-[1.02]">
+                <div onClick={() => navigate('/report-builder')} className={`bg-white p-6 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all duration-300 cursor-pointer group border-l-[6px] border-l-violet-600 hover:scale-[1.02] ${activeReportTab !== 'custom' ? 'hidden' : ''}`}>
                     <div className="w-10 h-10 rounded-xl bg-violet-50 text-violet-600 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
                         <Settings className="w-5 h-5" />
                     </div>
                     <h3 className="text-sm font-bold text-gray-800">Custom Report Builder</h3>
                     <p className="text-xs text-gray-500 font-medium mt-1">Create custom reports with specific parameters</p>
-                    <button onClick={(e) => { e.stopPropagation(); setShowCustomReportModal(true) }} className="mt-4 w-full py-2 border border-gray-200 text-gray-600 rounded-lg text-xs font-bold hover:bg-gray-50 transition-colors">Build Report</button>
+                    <button onClick={(e) => { e.stopPropagation(); navigate('/report-builder') }} className="mt-4 w-full py-2 border border-gray-200 text-gray-600 rounded-lg text-xs font-bold hover:bg-gray-50 transition-colors">Build Report</button>
                 </div>
             </div>
 
@@ -976,22 +1276,22 @@ export default function Reports() {
                                 <div className="border border-gray-100 rounded-2xl p-4 text-center">
                                     <p className="text-xs font-bold text-gray-600 mb-3">PF Compliance</p>
                                     <p className="text-2xl font-black text-emerald-500">{metrics.complianceScore.toFixed(1)}%</p>
-                                    <p className="text-[10px] text-gray-400 mt-1">{metrics.activeEmployees}/{metrics.totalEmployees} employees</p>
+                                    <p className="text-[10px] text-gray-600 mt-1">{metrics.activeEmployees}/{metrics.totalEmployees} employees</p>
                                 </div>
                                 <div className="border border-gray-100 rounded-2xl p-4 text-center">
                                     <p className="text-xs font-bold text-gray-600 mb-3">ESI Eligible</p>
                                     <p className="text-2xl font-black text-emerald-500">{esicSummary.eligibleCount}</p>
-                                    <p className="text-[10px] text-gray-400 mt-1">employees this month</p>
+                                    <p className="text-[10px] text-gray-600 mt-1">employees this month</p>
                                 </div>
                                 <div className="border border-gray-100 rounded-2xl p-4 text-center">
                                     <p className="text-xs font-bold text-gray-600 mb-3">PT Compliance</p>
                                     <p className="text-2xl font-black text-amber-500">{metrics.complianceScore.toFixed(1)}%</p>
-                                    <p className="text-[10px] text-gray-400 mt-1">Derived from enabled rules</p>
+                                    <p className="text-[10px] text-gray-600 mt-1">Derived from enabled rules</p>
                                 </div>
                                 <div className="border border-gray-100 rounded-2xl p-4 text-center">
                                     <p className="text-xs font-bold text-gray-600 mb-3">TDS Compliance</p>
                                     <p className="text-2xl font-black text-emerald-500">{metrics.complianceScore.toFixed(1)}%</p>
-                                    <p className="text-[10px] text-gray-400 mt-1">TDS enabled in payroll</p>
+                                    <p className="text-[10px] text-gray-600 mt-1">TDS enabled in payroll</p>
                                 </div>
                             </div>
                             <div>

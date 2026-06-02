@@ -1,3 +1,5 @@
+declare const Deno: any;
+
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
@@ -77,7 +79,16 @@ const buildTemplate = (payload: NotificationPayload) => {
   }
 }
 
-serve(async (req) => {
+const parseFromEmail = (value: string) => {
+  const match = value.match(/^(.*)<([^>]+)>$/)
+  if (!match) return { email: value.trim() }
+  return {
+    name: match[1].trim(),
+    email: match[2].trim(),
+  }
+}
+
+serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
@@ -92,6 +103,8 @@ serve(async (req) => {
   const supabaseUrl = Deno.env.get('SUPABASE_URL')
   const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
   const resendApiKey = Deno.env.get('RESEND_API_KEY')
+  const sendGridApiKey = Deno.env.get('SENDGRID_API_KEY')
+  const preferredProvider = (Deno.env.get('EMAIL_PROVIDER') || (resendApiKey ? 'resend' : 'sendgrid')).toLowerCase()
   const fromEmail = Deno.env.get('NOTIFICATION_FROM_EMAIL') || 'Payroll Management <noreply@example.com>'
 
   if (!supabaseUrl || !serviceRoleKey) {
@@ -128,6 +141,8 @@ serve(async (req) => {
 
   const template = buildTemplate(payload)
   const results = []
+  const provider = preferredProvider === 'sendgrid' && sendGridApiKey ? 'sendgrid' : 'resend'
+  const hasProviderKey = provider === 'sendgrid' ? Boolean(sendGridApiKey) : Boolean(resendApiKey)
 
   for (const recipient of cleanRecipients) {
     const { data: logRow } = await serviceClient
@@ -136,38 +151,55 @@ serve(async (req) => {
         notification_type: payload.type,
         recipient_email: recipient,
         subject: template.subject,
-        status: resendApiKey ? 'pending' : 'skipped',
-        provider: 'resend',
+        status: hasProviderKey ? 'pending' : 'skipped',
+        provider,
         metadata: payload.metadata || {},
         created_by: userData.user.id,
       })
       .select('id')
       .single()
 
-    if (!resendApiKey) {
-      results.push({ to: recipient, status: 'skipped', reason: 'RESEND_API_KEY is not configured.' })
+    if (!hasProviderKey) {
+      results.push({ to: recipient, status: 'skipped', reason: `${provider.toUpperCase()} API key is not configured.` })
       continue
     }
 
     try {
-      const response = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${resendApiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from: fromEmail,
-          to: recipient,
-          subject: template.subject,
-          html: template.html,
-          text: template.text,
-        }),
-      })
+      const response = provider === 'sendgrid'
+        ? await fetch('https://api.sendgrid.com/v3/mail/send', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${sendGridApiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              personalizations: [{ to: [{ email: recipient }] }],
+              from: parseFromEmail(fromEmail),
+              subject: template.subject,
+              content: [
+                { type: 'text/plain', value: template.text },
+                { type: 'text/html', value: template.html },
+              ],
+            }),
+          })
+        : await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${resendApiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              from: fromEmail,
+              to: recipient,
+              subject: template.subject,
+              html: template.html,
+              text: template.text,
+            }),
+          })
 
       const body = await response.json().catch(() => ({}))
       if (!response.ok) {
-        throw new Error(body?.message || `Resend returned ${response.status}`)
+        throw new Error(body?.errors?.[0]?.message || body?.message || `${provider} returned ${response.status}`)
       }
 
       await serviceClient
@@ -179,7 +211,7 @@ serve(async (req) => {
         })
         .eq('id', logRow?.id)
 
-      results.push({ to: recipient, status: 'sent', id: body?.id })
+      results.push({ to: recipient, status: 'sent', id: body?.id || response.headers.get('x-message-id') })
     } catch (error) {
       await serviceClient
         .from('notification_logs')

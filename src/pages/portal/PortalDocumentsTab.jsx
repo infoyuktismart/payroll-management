@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react'
-import { Upload, FileText, Image as ImageIcon, Eye, Download, Trash2, X } from 'lucide-react'
+import { Upload, FileText, Image as ImageIcon, Eye, Download, Trash2, X, AlertTriangle } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
+import { generateForm16PDF } from '../../lib/form16Generator'
+import { getIndianFinancialYear } from '../../lib/taxUtils'
+import { applyCompanyFilter, withCompanyScope } from '../../services/tenantScope'
 
 const formatDateSafe = (value, options = { month: 'short', day: '2-digit', year: 'numeric' }, fallback = 'N/A') => {
     if (!value) return fallback
@@ -29,15 +32,103 @@ export default function PortalDocumentsTab({
     // Delete modal state
     const [documentToDelete, setDocumentToDelete] = useState(null)
 
+    // Form 16 & HRA Rent receipt states
+    const [hraExemption, setHraExemption] = useState(0)
+    const [hasRentReceipt, setHasRentReceipt] = useState(false)
+    const [generatingForm16, setGeneratingForm16] = useState(false)
+
+    // LTA States
+    const [ltaClaims, setLtaClaims] = useState([])
+    const [submittingLta, setSubmittingLta] = useState(false)
+    const [ltaForm, setLtaForm] = useState({
+        amount: '',
+        year: getIndianFinancialYear()
+    })
+
+    const fetchLtaClaims = async () => {
+        if (!viewAsId) return
+        try {
+            const { data } = await applyCompanyFilter(supabase.from('lta_claims').select('*')).eq('employee_id', viewAsId).order('created_at', { ascending: false })
+            setLtaClaims(data || [])
+        } catch (err) {
+            console.error('Error fetching LTA claims:', err)
+        }
+    }
+
+    const handleSubmitLtaClaim = async (e) => {
+        e.preventDefault()
+        if (!viewAsId || !ltaForm.amount || Number(ltaForm.amount) <= 0) {
+            toast.warning('Please enter a valid claimed amount.')
+            return
+        }
+        setSubmittingLta(true)
+        try {
+            const { error } = await supabase.from('lta_claims').insert([withCompanyScope({
+                employee_id: viewAsId,
+                financial_year: ltaForm.year,
+                amount_claimed: parseFloat(ltaForm.amount),
+                status: 'pending'
+            })])
+            if (error) throw error
+            toast.success('LTA travel claim submitted for exemption!')
+            setLtaForm({ amount: '', year: getIndianFinancialYear() })
+            await fetchLtaClaims()
+        } catch (err) {
+            toast.error('Failed to submit claim: ' + err.message)
+        } finally {
+            setSubmittingLta(false)
+        }
+    }
+
+    useEffect(() => {
+        fetchLtaClaims()
+    }, [viewAsId])
+
+    useEffect(() => {
+        const checkHraAndReceipts = async () => {
+            if (!viewAsId) return
+            const fy = getIndianFinancialYear()
+            try {
+                // Fetch tax declarations
+                const { data: decl } = await applyCompanyFilter(supabase
+                    .from('tax_declarations')
+                    .select('hra_exemption'))
+                    .eq('employee_id', viewAsId)
+                    .eq('financial_year', fy)
+                    .maybeSingle()
+
+                if (decl) {
+                    setHraExemption(Number(decl.hra_exemption) || 0)
+                } else {
+                    setHraExemption(0)
+                }
+
+                // Check documents for category 'Rent Receipt'
+                const { data: docs } = await applyCompanyFilter(supabase
+                    .from('employee_documents')
+                    .select('id'))
+                    .eq('employee_id', viewAsId)
+                    .eq('category', 'Rent Receipt')
+                    .limit(1)
+
+                setHasRentReceipt(docs && docs.length > 0)
+            } catch (err) {
+                console.error('Error fetching tax declaration for HRA validation:', err)
+            }
+        }
+        checkHraAndReceipts()
+    }, [viewAsId, documents])
+
+
     const fetchDocumentsPage = async (employeeId, page, section, fallbackEmployee = currentEmployee) => {
         if (!employeeId) return
         const start = (page - 1) * 4
         const end = start + 3
         setLoading(true)
         try {
-            const { data, error, count } = await supabase
+            const { data, error, count } = await applyCompanyFilter(supabase
                 .from('employee_documents')
-                .select('*', { count: 'exact' })
+                .select('*', { count: 'exact' }))
                 .eq('employee_id', employeeId)
                 .eq('section', section)
                 .order('created_at', { ascending: false })
@@ -83,7 +174,7 @@ export default function PortalDocumentsTab({
         if (viewAsId) {
             fetchDocumentsPage(viewAsId, docCurrentPage, documentCategory)
         }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
     }, [viewAsId, docCurrentPage, documentCategory])
 
     useEffect(() => {
@@ -223,7 +314,7 @@ export default function PortalDocumentsTab({
 
                 const { error } = await supabase
                     .from('employee_documents')
-                    .insert(payload)
+                    .insert(withCompanyScope(payload))
                     .select('*')
                     .single()
 
@@ -255,9 +346,9 @@ export default function PortalDocumentsTab({
             if (documentToDelete.storage_path) {
                 await supabase.storage.from('employee-documents').remove([documentToDelete.storage_path])
             }
-            const { error } = await supabase
+            const { error } = await applyCompanyFilter(supabase
                 .from('employee_documents')
-                .delete()
+                .delete())
                 .eq('id', documentToDelete.id)
             if (error) throw error
             await fetchDocumentsPage(viewAsId, docCurrentPage, documentCategory)
@@ -305,6 +396,147 @@ export default function PortalDocumentsTab({
         document.body.removeChild(link)
     }
 
+    const handleDownloadForm16 = async () => {
+        if (!viewAsId) return
+        setGeneratingForm16(true)
+        try {
+            const fy = getIndianFinancialYear()
+            
+            // 1. Fetch employee details
+            const { data: emp, error: empErr } = await applyCompanyFilter(supabase
+                .from('employees')
+                .select('*'))
+                .eq('id', viewAsId)
+                .single()
+            if (empErr) throw empErr
+
+            // 2. Fetch tax declaration
+            const { data: declarations, error: declError } = await applyCompanyFilter(supabase
+                .from('tax_declarations')
+                .select('*'))
+                .eq('employee_id', viewAsId)
+                .eq('financial_year', fy)
+            if (declError) throw declError
+            const declaration = declarations?.find(d => d.status === 'approved') || declarations?.[0] || { regime: 'new' }
+
+            // 3. Fetch payroll items / runs
+            const fyStart = `${fy.split('-')[0]}-04-01`
+            const fyEnd = `${Number(fy.split('-')[0]) + 1}-03-31`
+            
+            const { data: dbItems, error: itemsError } = await applyCompanyFilter(supabase
+                .from('payroll_items')
+                .select(`
+                    basic_salary,
+                    total_allowances,
+                    total_deductions,
+                    net_salary,
+                    attendance_days,
+                    breakdown,
+                    payroll_runs!inner (
+                        month_year,
+                        status
+                    )
+                `))
+                .eq('employee_id', viewAsId)
+                .eq('payroll_runs.status', 'Completed')
+                .gte('payroll_runs.month_year', fyStart)
+                .lte('payroll_runs.month_year', fyEnd)
+
+            if (itemsError) throw itemsError
+            if (!dbItems || dbItems.length === 0) {
+                toast.warning(`No completed payroll records found for you in the financial year ${fy}. Form 16 requires completed payroll runs.`)
+                setGeneratingForm16(false)
+                return
+            }
+
+            // 4. Fetch company settings
+            const { data: settings, error: settingsError } = await applyCompanyFilter(supabase
+                .from('company_settings')
+                .select('*'))
+                .limit(1)
+            
+            if (settingsError) throw settingsError
+            
+            const companySettings = (settings && settings[0]) || {}
+
+            // 5. Map db items to structure expected by generateForm16PDF
+            const payrollRuns = dbItems.map(item => {
+                const basic = Number(item.basic_salary) || 0
+                const grossSalary = Number(item.breakdown?.gross) || (Number(item.basic_salary) + Number(item.total_allowances)) || 0
+                const earnings = item.breakdown?.earnings || []
+                
+                const findEarning = (keySubstrs) => {
+                    const found = earnings.find(e => keySubstrs.some(sub => e.name?.toLowerCase().includes(sub)))
+                    return found ? Number(found.amount) || 0 : 0
+                }
+                
+                const hra = findEarning(['house rent', 'hra'])
+                const conveyance = findEarning(['conveyance'])
+                const medical = findEarning(['medical'])
+                const specialAllowance = findEarning(['special'])
+                const lta = findEarning(['leave travel', 'lta'])
+                
+                let otherAllowance = 0
+                earnings.forEach(e => {
+                    const name = e.name?.toLowerCase() || ''
+                    if (name.includes('basic') || name.includes('house rent') || name.includes('hra') || 
+                        name.includes('conveyance') || name.includes('medical') || name.includes('special') || 
+                        name.includes('leave travel') || name.includes('lta') || name.includes('overtime')) {
+                        return
+                    }
+                    otherAllowance += Number(e.amount) || 0
+                })
+                
+                const deductions = item.breakdown?.deductions || []
+                const tdsObj = deductions.find(d => d.name?.toLowerCase().includes('tds') || d.name?.toLowerCase().includes('tax') || d.name?.toLowerCase().includes('income tax'))
+                const tds = tdsObj ? Number(tdsObj.amount) || 0 : 0
+                
+                return {
+                    basicSalary: basic,
+                    hra,
+                    conveyance,
+                    medical,
+                    specialAllowance,
+                    lta,
+                    otherAllowance,
+                    grossSalary,
+                    tds
+                }
+            })
+            
+            const mappedEmployee = {
+                ...emp,
+                name: `${emp.first_name || ''} ${emp.last_name || ''}`.trim(),
+                pan: emp.pan_number || 'NOT AVAILABLE',
+                designation: emp.designation || '',
+                joining_date: emp.joining_date || ''
+            }
+            
+            const mappedCompany = {
+                name: companySettings.company_name || companySettings.name || 'Acme Solutions',
+                pan: companySettings.pan_number || companySettings.pan || 'NOT AVAILABLE',
+                tan: companySettings.tan_number || companySettings.tan || 'NOT AVAILABLE',
+                address: companySettings.address || [companySettings.city, companySettings.state, companySettings.pincode].filter(Boolean).join(', ') || 'NOT AVAILABLE'
+            }
+            
+            generateForm16PDF({
+                employee: mappedEmployee,
+                company: mappedCompany,
+                declaration,
+                payrollRuns,
+                financialYear: fy,
+                download: true
+            })
+            
+            toast.success('Form 16 generated successfully.')
+        } catch (error) {
+            console.error('Error generating Form 16:', error)
+            toast.error('Failed to generate Form 16: ' + (error.message || 'Unknown error'))
+        } finally {
+            setGeneratingForm16(false)
+        }
+    }
+
     const documentsPerPage = 4
     const totalDocumentPages = Math.max(1, Math.ceil((documentsTotal || 0) / documentsPerPage))
 
@@ -339,16 +571,140 @@ export default function PortalDocumentsTab({
                 ))}
             </div>
 
+            {documentCategory === 'tax' && (
+                <div className="space-y-4">
+                    {/* HRA Exemption Validation Warning */}
+                    {hraExemption > 0 && !hasRentReceipt && (
+                        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-start gap-3 shadow-sm">
+                            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                            <div>
+                                <h4 className="text-xs font-bold text-amber-800">Rent Receipt Proof Required</h4>
+                                <p className="text-[11px] text-amber-700 mt-1 leading-relaxed">
+                                    You have declared an HRA exemption of <span className="font-bold">₹{hraExemption.toLocaleString('en-IN')}</span> for the current financial year. Please upload your monthly rent receipts (category: "Rent Receipt") to validate your claim and avoid additional TDS deductions.
+                                </p>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Form 16 Card */}
+                    <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white rounded-2xl p-6 shadow-md border border-slate-750 flex flex-col md:flex-row md:items-center justify-between gap-6">
+                        <div className="space-y-1">
+                            <span className="bg-blue-600/25 text-blue-400 border border-blue-500/20 px-2.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider">
+                                Statutory Compliance
+                            </span>
+                            <h3 className="text-lg font-bold">Form 16 Tax Certificate</h3>
+                            <p className="text-xs text-slate-300 max-w-lg leading-relaxed">
+                                Download your digitally generated Form 16 (Part A & Part B) containing your salary breakdown, tax calculations, and TDS deductions for the current financial year.
+                            </p>
+                        </div>
+                        <button
+                            onClick={handleDownloadForm16}
+                            disabled={generatingForm16}
+                            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs px-5 py-3 rounded-xl transition shadow shrink-0 flex items-center gap-2 self-start md:self-auto"
+                        >
+                            {generatingForm16 ? (
+                                <>
+                                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                                    Generating...
+                                </>
+                            ) : (
+                                <>
+                                    <Download className="w-4 h-4" /> Download Form 16 PDF
+                                </>
+                            )}
+                        </button>
+                    </div>
+
+                    {/* LTA Travel claims and Tax exemption section */}
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div className="lg:col-span-2 bg-white rounded-2xl border border-gray-250 p-6 shadow-sm space-y-4">
+                            <h4 className="text-base font-bold text-slate-800">Leave Travel Allowance (LTA) Exemption Claims</h4>
+                            <p className="text-xs text-gray-550">Statutory tax exemptions for domestic travel claims. Verify status and upload travel ticket bills below.</p>
+                            <table className="w-full text-left text-xs">
+                                <thead>
+                                    <tr className="border-b border-gray-150 text-gray-500 font-bold uppercase tracking-wider">
+                                        <th className="pb-2">Financial Year</th>
+                                        <th className="pb-2">Amount Claimed</th>
+                                        <th className="pb-2">Status</th>
+                                        <th className="pb-2">Date Submitted</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {ltaClaims.length > 0 ? (
+                                        ltaClaims.map((claim) => (
+                                            <tr key={claim.id} className="border-b border-gray-50 hover:bg-slate-50/20">
+                                                <td className="py-3 font-bold text-slate-700">{claim.financial_year}</td>
+                                                <td className="py-3 font-black text-slate-800">₹{Number(claim.amount_claimed).toLocaleString()}</td>
+                                                <td className="py-3">
+                                                    <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${
+                                                        claim.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
+                                                        claim.status === 'rejected' ? 'bg-rose-100 text-rose-700' :
+                                                        'bg-amber-100 text-amber-700'
+                                                    }`}>
+                                                        {claim.status}
+                                                    </span>
+                                                </td>
+                                                <td className="py-3 text-gray-500 font-semibold">{new Date(claim.created_at).toLocaleDateString()}</td>
+                                            </tr>
+                                        ))
+                                    ) : (
+                                        <tr>
+                                            <td colSpan="4" className="text-center py-6 text-gray-500 italic">No LTA claims submitted yet.</td>
+                                        </tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        {/* Submit LTA claim */}
+                        <div className="bg-white rounded-2xl border border-gray-250 p-6 shadow-sm">
+                            <h4 className="text-base font-bold text-slate-850 mb-3">Submit LTA Claim</h4>
+                            <form onSubmit={handleSubmitLtaClaim} className="space-y-4">
+                                <div className="space-y-1.5">
+                                    <label className="text-[10px] font-bold text-gray-600 uppercase tracking-wider block">Financial Year</label>
+                                    <select 
+                                        className="w-full rounded-xl border border-gray-200 px-4 py-2.5 text-xs font-bold text-gray-700 bg-white"
+                                        value={ltaForm.year}
+                                        onChange={(e) => setLtaForm({...ltaForm, year: e.target.value})}
+                                    >
+                                        <option value="2025-2026">2025-2026</option>
+                                        <option value="2026-2027">2026-2027</option>
+                                    </select>
+                                </div>
+                                <div className="space-y-1.5">
+                                    <label className="text-[10px] font-bold text-gray-600 uppercase tracking-wider block">Claimed Amount (INR)</label>
+                                    <input 
+                                        type="number"
+                                        required
+                                        placeholder="e.g. 25000"
+                                        className="w-full rounded-xl border border-gray-200 px-4 py-2.5 text-xs font-bold text-gray-700 bg-white"
+                                        value={ltaForm.amount}
+                                        onChange={(e) => setLtaForm({...ltaForm, amount: e.target.value})}
+                                    />
+                                </div>
+                                <button
+                                    type="submit"
+                                    disabled={submittingLta}
+                                    className="w-full px-5 py-2.5 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow transition-all disabled:opacity-50"
+                                >
+                                    {submittingLta ? 'Submitting...' : 'Submit Claim'}
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden shadow-sm">
                 <div className="overflow-x-auto">
                     <table className="w-full">
                         <thead className="bg-slate-50 border-b border-gray-150">
                             <tr>
-                                <th className="px-6 py-4 text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider">Document Name</th>
-                                <th className="px-6 py-4 text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider">Category</th>
-                                <th className="px-6 py-4 text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider">Upload Date</th>
-                                <th className="px-6 py-4 text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider">Status</th>
-                                <th className="px-6 py-4 text-right text-[10px] font-bold text-gray-400 uppercase tracking-wider">Actions</th>
+                                <th className="px-6 py-4 text-left text-[10px] font-bold text-gray-600 uppercase tracking-wider">Document Name</th>
+                                <th className="px-6 py-4 text-left text-[10px] font-bold text-gray-600 uppercase tracking-wider">Category</th>
+                                <th className="px-6 py-4 text-left text-[10px] font-bold text-gray-600 uppercase tracking-wider">Upload Date</th>
+                                <th className="px-6 py-4 text-left text-[10px] font-bold text-gray-600 uppercase tracking-wider">Status</th>
+                                <th className="px-6 py-4 text-right text-[10px] font-bold text-gray-600 uppercase tracking-wider">Actions</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100">
@@ -373,7 +729,7 @@ export default function PortalDocumentsTab({
                                                 </div>
                                                 <div>
                                                     <p className="text-xs font-bold text-slate-900">{doc.file_name || doc.name || 'Untitled document'}</p>
-                                                    <p className="text-[10px] text-gray-400 mt-0.5">{doc.file_size_mb ? `${doc.file_size_mb} MB` : 'Size unavailable'}</p>
+                                                    <p className="text-[10px] text-gray-600 mt-0.5">{doc.file_size_mb ? `${doc.file_size_mb} MB` : 'Size unavailable'}</p>
                                                 </div>
                                             </div>
                                         </td>
@@ -386,13 +742,13 @@ export default function PortalDocumentsTab({
                                         </td>
                                         <td className="px-6 py-4">
                                             <div className="flex items-center justify-end gap-2.5">
-                                                <button onClick={() => handleViewDocument(doc)} className="text-gray-400 hover:text-blue-600 transition" aria-label="View document">
+                                                <button onClick={() => handleViewDocument(doc)} className="text-gray-600 hover:text-blue-600 transition" aria-label="View document">
                                                     <Eye className="w-4 h-4" />
                                                 </button>
-                                                <button onClick={() => handleDownloadDocument(doc)} className="text-gray-400 hover:text-blue-600 transition" aria-label="Download document">
+                                                <button onClick={() => handleDownloadDocument(doc)} className="text-gray-600 hover:text-blue-600 transition" aria-label="Download document">
                                                     <Download className="w-4 h-4" />
                                                 </button>
-                                                <button onClick={() => setDocumentToDelete(doc)} className="text-gray-400 hover:text-rose-600 transition" aria-label="Delete document">
+                                                <button onClick={() => setDocumentToDelete(doc)} className="text-gray-600 hover:text-rose-600 transition" aria-label="Delete document">
                                                     <Trash2 className="w-4 h-4" />
                                                 </button>
                                             </div>
@@ -404,14 +760,14 @@ export default function PortalDocumentsTab({
                             {documents.length === 0 && (
                                 <tr>
                                     <td colSpan="5" className="px-6 py-14 text-center">
-                                        <p className="text-xs text-gray-400 italic">No documents found in this category.</p>
+                                        <p className="text-xs text-gray-600 italic">No documents found in this category.</p>
                                     </td>
                                 </tr>
                             )}
                         </tbody>
                     </table>
                 </div>
-                <div className="px-6 py-4 border-t border-gray-150 text-xs text-gray-400 flex items-center justify-between">
+                <div className="px-6 py-4 border-t border-gray-150 text-xs text-gray-600 flex items-center justify-between">
                     <span>Showing {documents.length} of {documentsTotal} document(s)</span>
                     <div className="flex items-center gap-2">
                         <button
@@ -456,6 +812,7 @@ export default function PortalDocumentsTab({
                                     <option value="Tax Form">Tax Form</option>
                                     <option value="Company Form">Company Form</option>
                                     <option value="Personal Record">Personal Record</option>
+                                    <option value="Rent Receipt">Rent Receipt</option>
                                     <option value="Contract">Contract</option>
                                     <option value="Education">Education</option>
                                     <option value="Identification">Identification</option>
@@ -479,7 +836,7 @@ export default function PortalDocumentsTab({
                                     <Upload className="w-5 h-5" />
                                 </div>
                                 <p className="text-sm font-bold text-slate-800">Click to upload or drag and drop</p>
-                                <p className="text-xs text-gray-400 mt-0.5">PDF, JPG, or PNG (max. 10MB)</p>
+                                <p className="text-xs text-gray-600 mt-0.5">PDF, JPG, or PNG (max. 10MB)</p>
                                 <label className="inline-flex mt-4 px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 cursor-pointer shadow">
                                     Select Files
                                     <input
@@ -510,7 +867,7 @@ export default function PortalDocumentsTab({
                                                     </div>
                                                     <div>
                                                         <p className="text-xs font-bold text-slate-900 truncate">{item.file.name}</p>
-                                                        <p className="text-[10px] text-gray-400 mt-0.5">{Number((item.file.size / (1024 * 1024)).toFixed(2))} MB</p>
+                                                        <p className="text-[10px] text-gray-600 mt-0.5">{Number((item.file.size / (1024 * 1024)).toFixed(2))} MB</p>
                                                     </div>
                                                 </div>
                                                 <div className="flex items-center gap-2">
@@ -546,7 +903,7 @@ export default function PortalDocumentsTab({
                                         </div>
                                     ))}
                                     {stagedFiles.length === 0 && (
-                                        <p className="text-xs text-gray-400 italic text-center py-4">No files selected.</p>
+                                        <p className="text-xs text-gray-600 italic text-center py-4">No files selected.</p>
                                     )}
                                 </div>
                             </div>

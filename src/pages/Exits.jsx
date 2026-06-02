@@ -1,38 +1,64 @@
-import { useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
+import { useState, useEffect, useMemo } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
 import { format } from 'date-fns'
 import { calculateSettlement, formatCurrency } from '../lib/payrollUtils'
-import { devLog } from '../lib/devLogger'
+import { logger, devLog } from '../lib/devLogger'
 import {
-    LogOut, AlertTriangle, FileText, CheckCircle2,
+    LogOut, AlertTriangle, CheckCircle2,
     Clock, Wrench, DollarSign, UserCheck, ShieldCheck,
     ChevronRight, Info, AlertCircle, Check, X
 } from 'lucide-react'
 import Modal from '../components/ui/Modal'
 import { TableRowSkeleton } from '../components/ui/SkeletonLoader'
+import { useEmployees } from '../hooks/useEmployees'
+import {
+    useExits,
+    useCreateExit,
+    useUpdateExitStatus,
+    useUpdateExitClearance,
+    useUpdateExitSettlement
+} from '../hooks/useExitsData'
+
+const StatCard = ({ title, value, icon: Icon, colorClass, borderClass }) => (
+    <div className={`bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex items-center justify-between transition-all duration-300 hover:scale-[1.02] hover:shadow-md cursor-default group border-l-[6px] ${borderClass}`}>
+        <div>
+            <p className="text-[11px] font-bold text-gray-600 mb-1 group-hover:text-gray-500 transition-colors uppercase tracking-widest">{title}</p>
+            <p className="text-3xl font-bold text-gray-900 group-hover:scale-105 transition-transform origin-left">{value}</p>
+        </div>
+        <div className={`p-3 rounded-xl transition-all duration-300 group-hover:rotate-12 group-hover:scale-110 shadow-sm ${colorClass}`}>
+            <Icon className="w-5 h-5" />
+        </div>
+    </div>
+)
 
 export default function Exits() {
     const { isAdmin, user } = useAuth()
     const toast = useToast()
 
-    const StatCard = ({ title, value, icon: Icon, colorClass, borderClass }) => (
-        <div className={`bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex items-center justify-between transition-all duration-300 hover:scale-[1.02] hover:shadow-md cursor-default group border-l-[6px] ${borderClass}`}>
-            <div>
-                <p className="text-[11px] font-bold text-gray-400 mb-1 group-hover:text-gray-500 transition-colors uppercase tracking-widest">{title}</p>
-                <p className="text-3xl font-bold text-gray-900 group-hover:scale-105 transition-transform origin-left">{value}</p>
-            </div>
-            <div className={`p-3 rounded-xl transition-all duration-300 group-hover:rotate-12 group-hover:scale-110 shadow-sm ${colorClass}`}>
-                <Icon className="w-5 h-5" />
-            </div>
-        </div>
-    )
+    // React Query Queries
+    const { data: exits = [], isLoading: loadingExits } = useExits()
+    const { data: employeesResponse, isLoading: loadingEmployees } = useEmployees({ page: 0, pageSize: 1000 })
+    const rawEmployees = useMemo(() => {
+        return Array.isArray(employeesResponse) ? employeesResponse : employeesResponse?.data || []
+    }, [employeesResponse])
 
-    const [exits, setExits] = useState([])
-    const [employees, setEmployees] = useState([])
-    const [employeeMap, setEmployeeMap] = useState({})
-    const [loading, setLoading] = useState(true)
+    const loading = loadingExits || loadingEmployees
+
+    // React Query Mutations
+    const createExitMutation = useCreateExit()
+    const updateExitStatusMutation = useUpdateExitStatus()
+    const updateExitClearanceMutation = useUpdateExitClearance()
+    const updateExitSettlementMutation = useUpdateExitSettlement()
+
+    // Map employees and build active list
+    const { employees, employeeMap } = useMemo(() => {
+        const active = rawEmployees.filter(e => e.status === 'active')
+        const map = {}
+        rawEmployees.forEach(e => map[e.id] = e)
+        return { employees: active, employeeMap: map }
+    }, [rawEmployees])
+
     const [isProcessModalOpen, setIsProcessModalOpen] = useState(false)
     const [isDetailModalOpen, setIsDetailModalOpen] = useState(false)
     const [selectedExit, setSelectedExit] = useState(null)
@@ -55,46 +81,12 @@ export default function Exits() {
         status: 'pending'
     })
 
-    useEffect(() => {
-        if (isAdmin) {
-            fetchData()
-        } else {
-            setLoading(false)
-        }
-    }, [isAdmin])
-
-    const fetchData = async () => {
-        try {
-            setLoading(true)
-            const [exitsRes, empsRes] = await Promise.all([
-                supabase.from('exits').select('*').order('created_at', { ascending: false }),
-                supabase.from('employees').select('id, first_name, last_name, status, designation, department, salary, joining_date, leave_balance')
-            ])
-
-            if (exitsRes.error) throw exitsRes.error
-            if (empsRes.error) throw empsRes.error
-
-            setExits(exitsRes.data)
-            setEmployees(empsRes.data.filter(e => e.status === 'active'))
-
-            const map = {}
-            empsRes.data.forEach(e => map[e.id] = e)
-            setEmployeeMap(map)
-        } catch (error) {
-            console.error('Error fetching data:', error)
-        } finally {
-            setLoading(false)
-        }
-    }
-
     const handleCreateExit = async (e) => {
         e.preventDefault()
         try {
-            const { error: exitError } = await supabase.from('exits').insert([formData])
-            if (exitError) throw exitError
+            await createExitMutation.mutateAsync(formData)
 
             setIsProcessModalOpen(false)
-            fetchData()
             setFormData({
                 employee_id: '',
                 exit_date: '',
@@ -110,28 +102,18 @@ export default function Exits() {
 
     const updateExitStatus = async (exitId, newStatus) => {
         try {
-            const { error } = await supabase
-                .from('exits')
-                .update({ status: newStatus })
-                .eq('id', exitId)
-
-            if (error) throw error
+            await updateExitStatusMutation.mutateAsync({
+                id: exitId,
+                status: newStatus,
+                employeeId: selectedExit?.employee_id
+            })
 
             // Update local state immediately for better UX
             if (selectedExit?.id === exitId) {
                 setSelectedExit(prev => ({ ...prev, status: newStatus }))
             }
 
-            // If completed, update employee status
-            if (newStatus === 'completed' && selectedExit) {
-                await supabase
-                    .from('employees')
-                    .update({ status: 'resigned' })
-                    .eq('id', selectedExit.employee_id)
-            }
-
             setNotification({ type: 'success', message: `Exit status updated to ${newStatus} successfully.` })
-            await fetchData()
         } catch (error) {
             setNotification({ type: 'error', message: error.message })
         }
@@ -141,61 +123,45 @@ export default function Exits() {
         if (!selectedExit) return
 
         const field = `${dept.toLowerCase()}_clearance`
-        const byField = `${dept.toLowerCase()}_clearance_by`
-
-        // Use the absolute latest value from selectedExit
-        const currentVal = selectedExit[field]
-        const newVal = !currentVal
+        const newVal = !selectedExit[field]
 
         try {
             devLog(`Toggling ${dept} clearance for exit ${exitId} to ${newVal}`)
 
-            const { error } = await supabase
-                .from('exits')
-                .update({
-                    [field]: newVal,
-                    [byField]: newVal ? user.id : null
-                })
-                .eq('id', exitId)
-
-            if (error) throw error
+            await updateExitClearanceMutation.mutateAsync({
+                id: exitId,
+                department: dept,
+                isCleared: newVal,
+                reviewerUserId: user.id
+            })
 
             // Update local state immediately
             setSelectedExit(prev => ({
                 ...prev,
                 [field]: newVal,
-                [byField]: newVal ? user.id : null
+                [`${dept.toLowerCase()}_clearance_by`]: newVal ? user.id : null
             }))
 
             setNotification({ type: 'success', message: `${dept} clearance updated successfully.` })
-
-            // Refresh background data
-            await fetchData()
         } catch (error) {
-            console.error('Clearance Update Error:', error)
+            logger.error('Clearance Update Error:', error)
             setNotification({ type: 'error', message: `Failed to update ${dept} clearance: ${error.message}` })
         }
     }
 
     const handleSettlementUpdate = async (exitId, amount, details) => {
         try {
-            const { error } = await supabase
-                .from('exits')
-                .update({
-                    settlement_amount: amount,
-                    settlement_details: details,
-                    settlement_date: new Date().toISOString().split('T')[0]
-                })
-                .eq('id', exitId)
-
-            if (error) throw error
+            await updateExitSettlementMutation.mutateAsync({
+                id: exitId,
+                amount,
+                details
+            })
 
             if (selectedExit?.id === exitId) {
                 setSelectedExit(prev => ({ ...prev, settlement_amount: amount, settlement_details: details }))
             }
 
             setNotification({ type: 'success', message: 'Settlement details updated successfully.' })
-            await fetchData()
         } catch (error) {
             setNotification({ type: 'error', message: error.message })
         }
@@ -318,7 +284,7 @@ export default function Exits() {
                                 <TableRowSkeleton cols={5} />
                             </>
                         ) : exits.length === 0 ? (
-                            <tr><td colSpan="5" className="text-center py-12 text-gray-400">No exit records found</td></tr>
+                            <tr><td colSpan="5" className="text-center py-12 text-gray-600">No exit records found</td></tr>
                         ) : (
                             exits.map((record) => {
                                 const emp = employeeMap[record.employee_id] || {}

@@ -1,3 +1,8 @@
+/**
+ * Formats a numeric amount to Indian Currency (INR) representation without decimals.
+ * @param {number|string} amount - The money value to format
+ * @returns {string} The formatted currency string (e.g., "₹1,50,000")
+ */
 export const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-IN', {
         style: 'currency',
@@ -6,6 +11,11 @@ export const formatCurrency = (amount) => {
     }).format(Number(amount) || 0)
 }
 
+/**
+ * Computes estimated annual income tax under the Simplified New Tax Regime (FY 2026-27).
+ * @param {number|string} annualTaxableIncome - The taxable annual income
+ * @returns {number} The calculated annual tax including rebate and cess
+ */
 export const calculateNewRegimeAnnualTax = (annualTaxableIncome) => {
     const taxable = Math.max(0, Number(annualTaxableIncome) || 0)
     const slabs = [
@@ -34,6 +44,14 @@ export const calculateNewRegimeAnnualTax = (annualTaxableIncome) => {
     return Math.round(taxAfterRebate + cess)
 }
 
+/**
+ * Computes monthly Tax Deducted at Source (TDS) based on current month's projected income.
+ * @param {Object} params
+ * @param {number|string} params.monthlyGross - Current month's gross earnings
+ * @param {number|string} [params.previousMonthlyTds=0] - Total TDS already deducted earlier in the year
+ * @param {number} [params.monthsRemaining=12] - Number of months remaining in financial year
+ * @returns {number} Calculated monthly TDS amount to deduct
+ */
 export const calculateMonthlyTds = ({ monthlyGross, previousMonthlyTds = 0, monthsRemaining = 12 }) => {
     const standardDeduction = 75000
     const annualTaxableIncome = Math.max(0, (Number(monthlyGross) || 0) * 12 - standardDeduction)
@@ -42,6 +60,11 @@ export const calculateMonthlyTds = ({ monthlyGross, previousMonthlyTds = 0, mont
     return Math.round(remainingTax / Math.max(1, monthsRemaining))
 }
 
+/**
+ * Generates an array-of-arrays representation of payroll records and converts to a CSV string.
+ * @param {Array<Object>} items - The list of payroll row items
+ * @returns {string} The generated CSV file content string
+ */
 export const buildPayrollCsv = (items) => {
     const headers = [
         'Employee ID',
@@ -72,6 +95,13 @@ export const buildPayrollCsv = (items) => {
         .join('\n')
 }
 
+/**
+ * Initiates a browser-triggered file download of a given blob or string content.
+ * @param {Blob|string} content - The content data to download
+ * @param {string} filename - The target filename
+ * @param {string} [type='text/csv;charset=utf-8;'] - MIME type of the file
+ * @returns {void}
+ */
 export const downloadBlob = (content, filename, type = 'text/csv;charset=utf-8;') => {
     const blob = content instanceof Blob ? content : new Blob([content], { type })
     const url = URL.createObjectURL(blob)
@@ -84,8 +114,15 @@ export const downloadBlob = (content, filename, type = 'text/csv;charset=utf-8;'
     URL.revokeObjectURL(url)
 }
 
+/**
+ * Calculates Full and Final (F&F) settlement amounts, gratuity, notice recovery, and leaves encashment.
+ * @param {Object} employee - The employee record object
+ * @param {Object} exitRecord - The employee's exit record details
+ * @param {number} [leaveBalance=0] - Total encashable leave days remaining
+ * @returns {{noticeRecovery: number, leaveEncashment: number, gratuity: number, finalAmount: number, shortfallDays: number, yearsOfService: number}} Settlement details
+ */
 export const calculateSettlement = (employee, exitRecord, leaveBalance = 0) => {
-    const monthlySalary = Number(employee?.salary) || 0
+    const monthlySalary = (Number(employee?.salary) || 0) * 0.5
     const dailySalary = monthlySalary / 30
     const resignationDate = exitRecord?.resignation_date ? new Date(exitRecord.resignation_date) : null
     const lastWorkingDay = exitRecord?.last_working_day || exitRecord?.exit_date ? new Date(exitRecord.last_working_day || exitRecord.exit_date) : null
@@ -111,3 +148,4 @@ export const calculateSettlement = (employee, exitRecord, leaveBalance = 0) => {
         yearsOfService: Number(yearsOfService.toFixed(1))
     }
 }
+

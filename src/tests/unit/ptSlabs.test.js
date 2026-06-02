@@ -2,9 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
     calculatePT,
     calculateAnnualPT,
-    getLWF,
-    PT_SLABS,
-    LWF_RATES
+    getLWF
 } from '../../lib/ptSlabs';
 
 describe('ptSlabs - calculatePT boundaries, states, and edge cases', () => {

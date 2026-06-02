@@ -1,7 +1,11 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useToast } from '../context/ToastContext'
-import { Upload, Download, AlertCircle, CheckCircle, RefreshCw, X, FileSpreadsheet, Eye, HelpCircle } from 'lucide-react'
+import { logger } from '../lib/devLogger'
+import { useFocusTrap } from '../hooks/useFocusTrap'
+import { usePlanEntitlements } from '../hooks/usePlanEntitlements'
+import { withCompanyScopeList } from '../services/tenantScope'
+import { Upload, Download, AlertCircle, CheckCircle, RefreshCw, X, FileSpreadsheet, HelpCircle } from 'lucide-react'
 
 // CSV headers mapping
 const REQUIRED_FIELDS = ['first_name', 'email', 'salary', 'designation', 'department']
@@ -18,7 +22,7 @@ const FIELD_LABELS = {
     designation: 'Designation*',
     department: 'Department*',
     reporting_person: 'Reporting Person',
-    salary: 'Monthly Basic Salary*',
+    salary: 'Monthly CTC*',
     pan_number: 'PAN Card Number',
     aadhaar_number: 'Aadhaar Card Number',
     bank_name: 'Bank Name',
@@ -33,6 +37,17 @@ const FIELD_LABELS = {
 }
 
 export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
+    const trapRef = useFocusTrap(isOpen)
+    const { entitlements, canAddUsage } = usePlanEntitlements()
+
+    useEffect(() => {
+        const handleEscape = (e) => {
+            if (e.key === 'Escape') onClose()
+        }
+        if (isOpen) document.addEventListener('keydown', handleEscape)
+        return () => document.removeEventListener('keydown', handleEscape)
+    }, [isOpen, onClose])
+
     const toast = useToast()
     const fileInputRef = useRef(null)
     const [step, setStep] = useState(1) // 1: Upload, 2: Preview & Validate, 3: Importing, 4: Done
@@ -42,6 +57,7 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
     const [parsedData, setParsedData] = useState([])
     const [importProgress, setImportProgress] = useState(0)
     const [importStats, setImportStats] = useState({ success: 0, failed: 0 })
+    const [xlsxLoading, setXlsxLoading] = useState(false)
 
     if (!isOpen) return null
 
@@ -79,60 +95,31 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
         toast.success('Template CSV downloaded successfully.')
     }
 
-    // CSV Parser in JS
-    const parseCSV = (text) => {
-        const lines = []
-        let row = [""]
-        let inQuotes = false
-
-        for (let i = 0; i < text.length; i++) {
-            const char = text[i]
-            const nextChar = text[i + 1]
-
-            if (char === '"') {
-                if (inQuotes && nextChar === '"') {
-                    row[row.length - 1] += '"'
-                    i++ // Skip next double quote
-                } else {
-                    inQuotes = !inQuotes
-                }
-            } else if (char === ',' && !inQuotes) {
-                row.push('')
-            } else if ((char === '\r' || char === '\n') && !inQuotes) {
-                if (char === '\r' && nextChar === '\n') {
-                    i++
-                }
-                lines.push(row)
-                row = ['']
-            } else {
-                row[row.length - 1] += char
-            }
-        }
-        if (row.length > 1 || row[0] !== '') {
-            lines.push(row)
-        }
-        return lines
-    }
-
-    // Handle CSV File upload and validate
-    const handleFile = (file) => {
+    // Handle CSV / Excel File upload and validate using dynamic xlsx import
+    const processFile = async (file) => {
         if (!file) return
-        if (file.type !== 'text/csv' && !file.name.endsWith('.csv')) {
-            toast.error('Invalid file type. Please upload a CSV file.')
+        const isCSV = file.name.endsWith('.csv')
+        const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls')
+
+        if (!isCSV && !isExcel) {
+            toast.error('Invalid file type. Please upload a CSV or Excel file.')
             return
         }
 
-        const reader = new FileReader()
-        reader.onload = (e) => {
-            const text = e.target.result
-            const parsedRows = parseCSV(text)
+        setXlsxLoading(true)
+        try {
+            const XLSX = await import('xlsx')
+            const buffer = await file.arrayBuffer()
+            const wb = XLSX.read(buffer, { type: 'buffer' })
+            const ws = wb.Sheets[wb.SheetNames[0]]
+            const parsedRows = XLSX.utils.sheet_to_json(ws, { header: 1 })
 
             if (parsedRows.length <= 1) {
-                toast.error('CSV file is empty or only contains headers.')
+                toast.error('File is empty or only contains headers.')
                 return
             }
 
-            const headers = parsedRows[0].map(h => h.trim().toLowerCase())
+            const headers = parsedRows[0].map(h => String(h || '').trim().toLowerCase())
             const rowsData = parsedRows.slice(1)
             
             // Check if essential headers are present
@@ -148,7 +135,8 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
                 headers.forEach((h, colIdx) => {
                     const fieldName = Object.keys(FIELD_LABELS).find(k => k === h)
                     if (fieldName) {
-                        obj[fieldName] = row[colIdx]?.trim() || ''
+                        const cellVal = row[colIdx]
+                        obj[fieldName] = cellVal !== undefined && cellVal !== null ? String(cellVal).trim() : ''
                     }
                 })
                 return {
@@ -160,8 +148,12 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
 
             setParsedData(formatted)
             setStep(2)
+        } catch (error) {
+            logger.error('Error parsing file:', error)
+            toast.error('Failed to parse file: ' + error.message)
+        } finally {
+            setXlsxLoading(false)
         }
-        reader.readAsText(file)
     }
 
     // Single-row validator
@@ -176,7 +168,7 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
             errors.email = 'Invalid email format.'
         }
         if (!row.salary) {
-            errors.salary = 'Monthly Basic Salary is required.'
+            errors.salary = 'Monthly CTC is required.'
         } else if (isNaN(Number(row.salary)) || Number(row.salary) <= 0) {
             errors.salary = 'Salary must be a positive number.'
         }
@@ -222,7 +214,7 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
         e.stopPropagation()
         setDragActive(false)
         if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-            handleFile(e.dataTransfer.files[0])
+            processFile(e.dataTransfer.files[0])
         }
     }
 
@@ -231,6 +223,12 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
         const validRows = parsedData.filter(r => Object.keys(r.errors).length === 0)
         if (validRows.length === 0) {
             toast.error('No valid rows to import. Please resolve validation errors.')
+            return
+        }
+        if (!canAddUsage('employees', validRows.length)) {
+            const current = entitlements?.usage?.employees || 0
+            const limit = entitlements?.limits?.employees
+            toast.error(`This import would exceed the ${entitlements?.plan?.name || 'current'} employee limit${limit ? ` (${current}/${limit})` : ''}. Reduce the file or upgrade the plan.`)
             return
         }
 
@@ -274,11 +272,11 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
             })
 
             try {
-                const { error } = await supabase.from('employees').insert(batch)
+                const { error } = await supabase.from('employees').insert(withCompanyScopeList(batch))
                 if (error) throw error
                 successCount += batch.length
             } catch (err) {
-                console.error('Import batch error:', err)
+                logger.error('Import batch error:', err)
                 failedCount += batch.length
             }
 
@@ -302,17 +300,17 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
     const validCount = parsedData.length - errorCount
 
     return (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="bulk-import-title" ref={trapRef}>
             <div className="bg-white rounded-3xl w-full max-w-4xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in zoom-in-95 duration-200">
                 
                 {/* Header */}
                 <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
                     <div>
-                        <h2 className="text-xl font-bold text-gray-900">Bulk Import Employees</h2>
+                        <h2 id="bulk-import-title" className="text-xl font-bold text-gray-900">Bulk Import Employees</h2>
                         <p className="text-xs text-gray-500 mt-1">Upload a CSV file containing employee details to populate the database in bulk</p>
                     </div>
-                    <button onClick={onClose} className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors">
-                        <X className="w-5 h-5" />
+                    <button onClick={onClose} aria-label="Close dialog" className="p-2 text-gray-600 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors">
+                        <X className="w-5 h-5" aria-hidden="true" />
                     </button>
                 </div>
 
@@ -340,24 +338,33 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
                                 onDragOver={handleDrag}
                                 onDragLeave={handleDrag}
                                 onDrop={handleDrop}
-                                onClick={() => fileInputRef.current.click()}
+                                onClick={() => !xlsxLoading && fileInputRef.current.click()}
                                 className={`border-2 border-dashed rounded-3xl p-10 flex flex-col items-center justify-center cursor-pointer transition-all duration-300 ${
                                     dragActive ? 'border-indigo-500 bg-indigo-50/40 scale-[0.99]' : 'border-gray-200 hover:border-indigo-400 hover:bg-slate-50/40'
-                                }`}
+                                } ${xlsxLoading ? 'opacity-70 cursor-wait' : ''}`}
                             >
                                 <input
                                     ref={fileInputRef}
                                     type="file"
-                                    accept=".csv"
+                                    accept=".csv,.xlsx,.xls"
                                     className="hidden"
-                                    onChange={(e) => handleFile(e.target.files[0])}
+                                    onChange={(e) => processFile(e.target.files[0])}
+                                    disabled={xlsxLoading}
                                 />
-                                <div className="w-16 h-16 rounded-2xl bg-indigo-50 flex items-center justify-center text-indigo-600 mb-4 animate-bounce">
-                                    <Upload className="w-7 h-7" />
+                                <div className="w-16 h-16 rounded-2xl bg-indigo-50 flex items-center justify-center text-indigo-600 mb-4">
+                                    {xlsxLoading ? (
+                                        <RefreshCw className="w-7 h-7 animate-spin" />
+                                    ) : (
+                                        <Upload className="w-7 h-7 animate-bounce" />
+                                    )}
                                 </div>
-                                <h3 className="text-base font-bold text-gray-800">Drag & drop your CSV file here</h3>
-                                <p className="text-xs text-gray-400 mt-1">or click to browse from files</p>
-                                <p className="text-[10px] text-gray-300 mt-4">Only CSV files up to 5MB supported</p>
+                                <h3 className="text-base font-bold text-gray-800">
+                                    {xlsxLoading ? 'Processing file...' : 'Drag & drop your CSV or Excel file here'}
+                                </h3>
+                                <p className="text-xs text-gray-600 mt-1">
+                                    {xlsxLoading ? 'Extracting spreadsheet worksheets' : 'or click to browse from files'}
+                                </p>
+                                <p className="text-[10px] text-gray-300 mt-4">CSV and Excel files up to 5MB supported</p>
                             </div>
 
                             {/* Template Download */}

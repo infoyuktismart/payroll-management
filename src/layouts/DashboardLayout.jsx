@@ -2,19 +2,22 @@ import { useState } from 'react'
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import ErrorBoundary from '../components/ErrorBoundary'
+import CompanySwitcher from '../components/CompanySwitcher'
+import BranchSwitcher from '../components/BranchSwitcher'
+import SubscriptionStatusBanner from '../components/SubscriptionStatusBanner'
+import { ROUTE_FEATURES } from '../lib/planFeatures'
+import { usePlanEntitlements } from '../hooks/usePlanEntitlements'
 import {
     LayoutDashboard,
     Users,
     CalendarCheck,
     Wallet,
-    MinusCircle,
     ClipboardList,
     BarChart3,
     UserSquare2,
     LogOut,
     Menu,
     Search,
-    Bell,
     Settings,
     Plus,
     DoorOpen,
@@ -22,7 +25,11 @@ import {
     Building,
     UserCheck,
     Banknote,
-    Receipt
+    Receipt,
+    ChartSpline,
+    Fingerprint,
+    Shield,
+    Crown
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -39,7 +46,7 @@ const SidebarItem = ({ to, icon: Icon, label, active }) => (
     >
         <Icon className={clsx(
             "w-5 h-5 transition-all duration-300",
-            active ? "text-white" : "text-gray-400 group-hover:text-slate-900 group-hover:scale-110"
+            active ? "text-white" : "text-gray-600 group-hover:text-slate-900 group-hover:scale-110"
         )} />
         <span className={clsx(
             "font-bold text-sm transition-all duration-300",
@@ -50,6 +57,7 @@ const SidebarItem = ({ to, icon: Icon, label, active }) => (
 
 export default function DashboardLayout() {
     const { signOut, user, isAdmin, profileData } = useAuth()
+    const { loading: entitlementLoading, canUseFeature, isSuperAdmin } = usePlanEntitlements()
     const location = useLocation()
     const navigate = useNavigate()
     const [isSidebarOpen, setIsSidebarOpen] = useState(false)
@@ -61,27 +69,46 @@ export default function DashboardLayout() {
 
     // Navigation Items Configuration
     const allNavItems = [
-        { to: '/', icon: LayoutDashboard, label: 'Dashboard', adminOnly: true },
+        { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard', adminOnly: true },
         { to: '/employees', icon: Users, label: 'Employee Management', adminOnly: true },
         { to: '/onboarding', icon: UserCheck, label: 'Onboarding Checklist', adminOnly: true },
         { to: '/attendance', icon: CalendarCheck, label: 'Attendance', adminOnly: true },
+        { to: '/biometric-import', icon: Fingerprint, label: 'Biometric Import', adminOnly: true },
         { to: '/salary-structure', icon: Wallet, label: 'Salary Structure', adminOnly: true },
         // { to: '/deductions', icon: MinusCircle, label: 'Deductions', adminOnly: true },
         { to: '/payroll-processing', icon: ClipboardList, label: 'Payroll Processing', adminOnly: true },
         { to: '/loans', icon: Banknote, label: 'Loans & Advances', adminOnly: true },
         { to: '/reimbursements', icon: Receipt, label: 'Reimbursements', adminOnly: true },
         { to: '/reports', icon: BarChart3, label: 'Reports', adminOnly: true },
+        { to: '/analytics', icon: ChartSpline, label: 'Analytics', adminOnly: true },
         { to: '/exits', icon: DoorOpen, label: 'Exit Management', adminOnly: true },
         { to: '/tax-declarations', icon: ReceiptText, label: 'Tax Declarations', adminOnly: true },
+        { to: '/subscription-management', icon: Crown, label: 'Subscription Management', adminOnly: true },
+        { to: '/billing', icon: Receipt, label: 'Billing & Invoices', adminOnly: true },
         { to: '/company-settings', icon: Building, label: 'Company Settings', adminOnly: true },
         { to: '/settings', icon: Settings, label: 'Settings', adminOnly: true },
+        { to: '/superadmin', icon: Shield, label: 'Super Admin Analytics', superadminOnly: true },
         { to: '/portal', icon: UserSquare2, label: 'Employee Portal', adminOnly: false },
     ]
 
     const navItems = allNavItems.filter(item => {
-        if (isAdmin) return true // Admins see everything
+        if (item.superadminOnly) {
+            return profileData?.role === 'superadmin'
+        }
+        if (isAdmin) {
+            const requiredFeature = ROUTE_FEATURES[item.to]
+            if (requiredFeature && !isSuperAdmin && !entitlementLoading && !canUseFeature(requiredFeature)) {
+                return false
+            }
+            return true
+        }
         return !item.adminOnly // Employees only see non-admin items (Portal)
     })
+    const bottomNavItems = navItems.filter(item => (
+        isAdmin
+            ? ['/dashboard', '/attendance', '/payroll-processing', '/reports', '/settings'].includes(item.to)
+            : ['/portal'].includes(item.to)
+    ))
 
     return (
         <div className="flex h-screen overflow-hidden bg-gray-50">
@@ -122,7 +149,7 @@ export default function DashboardLayout() {
                             <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-600 uppercase tracking-wider">
                                 {isAdmin ? 'Admin' : 'Employee'}
                             </span>
-                            <span className="text-[10px] font-semibold text-gray-400 group-hover:text-gray-600 transition-colors">{profileData?.employeeId || 'EMP24001'}</span>
+                            <span className="text-[10px] font-semibold text-gray-600 group-hover:text-gray-600 transition-colors">{profileData?.employeeId || 'EMP24001'}</span>
                         </div>
                     </div>
                 </div>
@@ -163,17 +190,23 @@ export default function DashboardLayout() {
                         >
                             <Menu className="w-6 h-6" />
                         </button>
-                        <h2 className="text-lg font-semibold text-gray-800">{profileData?.role === 'Employee' ? 'Employee Portal' : location.pathname === '/' ? 'Dashboard' : location.pathname.replace('/', '').replace('-', ' ').replace(/\b\w/g, l => l.toUpperCase())}</h2>
+                        <h2 className="text-lg font-semibold text-gray-800">{profileData?.role === 'Employee' ? 'Employee Portal' : location.pathname === '/dashboard' ? 'Dashboard' : location.pathname.replace('/', '').replace('-', ' ').replace(/\b\w/g, l => l.toUpperCase())}</h2>
                     </div>
 
                     <div className="flex items-center space-x-6">
+                        {isAdmin && (
+                            <div className="flex items-center space-x-4">
+                                {canUseFeature('multi_company') && <CompanySwitcher />}
+                                <BranchSwitcher />
+                            </div>
+                        )}
                         <div className="flex items-center space-x-2">
                             <div className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center text-slate-400 font-bold text-xs" aria-hidden="true">
                                 IT
                             </div>
-                            <span className="text-sm text-gray-400 font-medium">Welcome to Payroll Management System</span>
+                            <span className="text-sm text-gray-600 font-medium">Welcome to Payroll Management System</span>
                         </div>
-                        <div className="flex items-center space-x-4 text-gray-400 border-l pl-6 border-gray-100">
+                        <div className="flex items-center space-x-4 text-gray-600 border-l pl-6 border-gray-100">
                             <button className="cursor-pointer hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-slate-500 rounded-lg p-1" aria-label="Search">
                                 <Search className="w-5 h-5" />
                             </button>
@@ -190,10 +223,33 @@ export default function DashboardLayout() {
                 <main className="flex-1 overflow-y-auto p-4 lg:p-8 bg-gray-100">
                     <div className="max-w-7xl mx-auto">
                         <ErrorBoundary>
+                            {isAdmin && <SubscriptionStatusBanner />}
                             <Outlet />
                         </ErrorBoundary>
                     </div>
                 </main>
+
+                <nav
+                    className="pwa-bottom-nav lg:hidden"
+                    style={{ gridTemplateColumns: `repeat(${Math.max(1, bottomNavItems.length)}, minmax(0, 1fr))` }}
+                    aria-label="Primary mobile navigation"
+                >
+                    {bottomNavItems.map((item) => {
+                        const Icon = item.icon
+                        const active = location.pathname === item.to
+                        return (
+                            <Link
+                                key={item.to}
+                                to={item.to}
+                                className={clsx('pwa-bottom-nav__item', active && 'pwa-bottom-nav__item--active')}
+                                aria-current={active ? 'page' : undefined}
+                            >
+                                <Icon className="w-5 h-5" />
+                                <span>{item.label.replace(' Processing', '').replace(' Management', '')}</span>
+                            </Link>
+                        )
+                    })}
+                </nav>
             </div>
         </div>
     )

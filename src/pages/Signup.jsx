@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { devLog } from '../lib/devLogger'
+import { logger } from '../lib/devLogger'
 import { Lock, Mail, User, BadgeCheck, AlertCircle, KeyRound, CheckCircle } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 export default function Signup() {
-    devLog('Signup Component Rendered - Version: 4.0 (Fixes Applied)')
+    logger.info('Signup Component Rendered - Version: 4.0 (Fixes Applied)')
     // Steps: 1=Verify, 2=OTP, 3=Set Password
     const [step, setStep] = useState(1)
     const [loading, setLoading] = useState(false)
@@ -16,7 +16,7 @@ export default function Signup() {
     // This prevents "Session from session_id claim does not exist" caused by stale tokens
     useEffect(() => {
         const cleanSlate = async () => {
-            devLog('Signup: Cleaning up stale sessions...')
+            logger.info('Signup: Cleaning up stale sessions...')
             await supabase.auth.signOut()
             localStorage.removeItem('sb-ssepsawjtwskjkdxsrgx-auth-token') // Try to clear strict key if possible, but signOut handles it
         }
@@ -47,7 +47,7 @@ export default function Signup() {
 
     // Step 1: Verify Eligibility & Send OTP
     const handleVerifyAndSendOtp = async (e) => {
-        devLog('Signup: Starting Verification...')
+        logger.info('Signup: Starting Verification...')
         e.preventDefault()
         setError('')
         setLoading(true)
@@ -61,7 +61,7 @@ export default function Signup() {
                 })
 
             if (verifyError || !verifyData?.valid) {
-                console.error('Signup eligibility RPC failed:', verifyError || verifyData)
+                logger.error('Signup eligibility RPC failed:', verifyError || verifyData)
                 const details = [verifyError?.message, verifyError?.details, verifyError?.hint]
                     .filter(Boolean)
                     .join(' ')
@@ -108,7 +108,7 @@ export default function Signup() {
             }
 
             // Capture Session for Resilience
-            devLog('OTP Verified. Session Captured.')
+            logger.info('OTP Verified. Session Captured.')
             sessionBackup.current = data.session
 
             setStep(3)
@@ -142,7 +142,7 @@ export default function Signup() {
                     throw new Error('Auth session missing')
                 }
             } catch (authError) {
-                console.warn('Standard auth failed, falling back to direct token usage:', authError.message)
+                logger.warn('Standard auth failed, falling back to direct token usage:', authError.message)
 
                 // 2. FALLBACK: Use captured session token directly against API
                 if (sessionBackup.current?.access_token) {
@@ -185,7 +185,7 @@ export default function Signup() {
                 })
 
                 if (linkError) {
-                    console.error('Link Error:', linkError)
+                    logger.error('Link Error:', linkError)
                     throw new Error('Failed to link account. Please contact HR.')
                 }
             } else {
@@ -196,7 +196,7 @@ export default function Signup() {
             setTimeout(() => navigate('/login'), 2000)
 
         } catch (err) {
-            console.error('Signup Error:', err)
+            logger.error('Signup Error:', err)
             setError(err.message)
         } finally {
             setLoading(false)
@@ -243,10 +243,10 @@ export default function Signup() {
                 {step === 1 && (
                     <form onSubmit={handleVerifyAndSendOtp} className="space-y-5">
                         <div>
-                            <label className="block text-sm font-bold text-gray-700 mb-2">Employee ID</label>
+                            <label htmlFor="auto-id-signup-1" className="block text-sm font-bold text-gray-700 mb-2">Employee ID</label>
                             <div className="relative">
                                 <BadgeCheck className="absolute left-3 top-3.5 h-5 w-5 text-gray-400" />
-                                <input
+                                <input id="auto-id-signup-1"
                                     type="text"
                                     required
                                     className="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
@@ -257,10 +257,10 @@ export default function Signup() {
                             </div>
                         </div>
                         <div>
-                            <label className="block text-sm font-bold text-gray-700 mb-2">Email Address</label>
+                            <label htmlFor="auto-id-signup-2" className="block text-sm font-bold text-gray-700 mb-2">Email Address</label>
                             <div className="relative">
                                 <Mail className="absolute left-3 top-3.5 h-5 w-5 text-gray-400" />
-                                <input
+                                <input id="auto-id-signup-2"
                                     type="email"
                                     required
                                     className="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
@@ -280,10 +280,10 @@ export default function Signup() {
                 {step === 2 && (
                     <form onSubmit={handleVerifyOtp} className="space-y-5">
                         <div>
-                            <label className="block text-sm font-bold text-gray-700 mb-2">Verification Code</label>
+                            <label htmlFor="auto-id-signup-3" className="block text-sm font-bold text-gray-700 mb-2">Verification Code</label>
                             <div className="relative">
                                 <KeyRound className="absolute left-3 top-3.5 h-5 w-5 text-gray-400" />
-                                <input
+                                <input id="auto-id-signup-3"
                                     type="text"
                                     required
                                     maxLength={8}
@@ -309,10 +309,10 @@ export default function Signup() {
                 {step === 3 && (
                     <form onSubmit={handleSetPassword} className="space-y-5">
                         <div>
-                            <label className="block text-sm font-bold text-gray-700 mb-2">Create Password</label>
+                            <label htmlFor="auto-id-signup-4" className="block text-sm font-bold text-gray-700 mb-2">Create Password</label>
                             <div className="relative">
                                 <Lock className="absolute left-3 top-3.5 h-5 w-5 text-gray-400" />
-                                <input
+                                <input id="auto-id-signup-4"
                                     type="password"
                                     required
                                     minLength={8}
@@ -324,10 +324,10 @@ export default function Signup() {
                             </div>
                         </div>
                         <div>
-                            <label className="block text-sm font-bold text-gray-700 mb-2">Confirm Password</label>
+                            <label htmlFor="auto-id-signup-5" className="block text-sm font-bold text-gray-700 mb-2">Confirm Password</label>
                             <div className="relative">
                                 <Lock className="absolute left-3 top-3.5 h-5 w-5 text-gray-400" />
-                                <input
+                                <input id="auto-id-signup-5"
                                     type="password"
                                     required
                                     minLength={8}

@@ -99,7 +99,7 @@ export default function ResetPassword() {
 
                 <form onSubmit={handleSubmit} className="space-y-6">
                     <div>
-                        <label className="block text-sm font-bold text-gray-700 mb-2">
+                        <label htmlFor="reset-password" className="block text-sm font-bold text-gray-700 mb-2">
                             New Password *
                         </label>
                         <div className="relative">
@@ -107,6 +107,7 @@ export default function ResetPassword() {
                                 <Lock className="h-5 w-5 text-gray-400" />
                             </div>
                             <input
+                                id="reset-password"
                                 type="password"
                                 required
                                 minLength={6}
@@ -122,7 +123,7 @@ export default function ResetPassword() {
                     </div>
 
                     <div>
-                        <label className="block text-sm font-bold text-gray-700 mb-2">
+                        <label htmlFor="reset-confirm-password" className="block text-sm font-bold text-gray-700 mb-2">
                             Confirm New Password *
                         </label>
                         <div className="relative">
@@ -130,6 +131,7 @@ export default function ResetPassword() {
                                 <Lock className="h-5 w-5 text-gray-400" />
                             </div>
                             <input
+                                id="reset-confirm-password"
                                 type="password"
                                 required
                                 minLength={6}

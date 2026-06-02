@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Camera, X, Mail, Phone } from 'lucide-react'
+import { Camera, X } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 
 export default function PortalPersonalTab({
@@ -124,19 +124,19 @@ export default function PortalPersonalTab({
                     </div>
                     <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div>
-                            <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Email Address</p>
+                            <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Email Address</p>
                             <p className="text-sm font-bold text-slate-800 mt-1">{currentEmployee.email || 'N/A'}</p>
                         </div>
                         <div>
-                            <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Phone Number</p>
+                            <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Phone Number</p>
                             <p className="text-sm font-bold text-slate-800 mt-1">{currentEmployee.phone || 'N/A'}</p>
                         </div>
                         <div>
-                            <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Work Extension</p>
+                            <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Work Extension</p>
                             <p className="text-sm font-bold text-slate-800 mt-1">{currentEmployee.work_extension || 'N/A'}</p>
                         </div>
                         <div>
-                            <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Alternative Email</p>
+                            <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Alternative Email</p>
                             <p className="text-sm font-bold text-slate-800 mt-1">{currentEmployee.alternative_email || currentEmployee.email || 'N/A'}</p>
                         </div>
                     </div>
@@ -160,15 +160,15 @@ export default function PortalPersonalTab({
                     </div>
                     <div className="p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
                         <div>
-                            <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Name</p>
+                            <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Name</p>
                             <p className="text-sm font-bold text-slate-800 mt-1">{currentEmployee.emergency_contact_person || 'N/A'}</p>
                         </div>
                         <div>
-                            <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Relationship</p>
+                            <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Relationship</p>
                             <p className="text-sm font-bold text-slate-800 mt-1">{currentEmployee.emergency_contact_relationship || 'N/A'}</p>
                         </div>
                         <div>
-                            <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Phone Number</p>
+                            <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">Phone Number</p>
                             <p className="text-sm font-bold text-slate-800 mt-1">{currentEmployee.emergency_contact_number || 'N/A'}</p>
                         </div>
                     </div>
@@ -209,7 +209,7 @@ export default function PortalPersonalTab({
                                 </p>
                             </div>
                         ) : (
-                            <p className="text-xs text-gray-400 italic">No upcoming leave scheduled.</p>
+                            <p className="text-xs text-gray-600 italic">No upcoming leave scheduled.</p>
                         )}
                     </div>
                 </div>
