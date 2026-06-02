@@ -1,10 +1,22 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <!-- TODO: Tighten CSP by using cryptographic nonces for script-src/style-src in production instead of 'unsafe-inline' and 'unsafe-eval' -->
+    <meta http-equiv="Content-Security-Policy" content="
+      default-src 'self';
+      script-src 'self' 'unsafe-inline' 'unsafe-eval';
+      style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+      connect-src 'self' https://*.supabase.co wss://*.supabase.co https://sentry.io https://api.ipify.org;
+      img-src 'self' data: blob: https://*.supabase.co;
+      font-src 'self' https://fonts.gstatic.com;
+      frame-src 'none';
+      object-src 'none';
+    ">
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" type="image/svg+xml" href="/pwa-icon.svg" />
+    <link rel="apple-touch-icon" href="/pwa-icon-192.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <meta name="theme-color" content="#2563eb" />
+    <meta name="theme-color" content="#0f172a" />
     <meta name="description" content="Enterprise Grade Payroll and HR Management System" />
     <link rel="manifest" href="/manifest.json" />
     <title>Enterprise Payroll Management</title>
@@ -13,16 +25,5 @@
     <noscript>You need to enable JavaScript to run this app.</noscript>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
-    <script>
-      if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js').then((registration) => {
-            console.log('SW registered: ', registration);
-          }).catch((registrationError) => {
-            console.log('SW registration failed: ', registrationError);
-          });
-        });
-      }
-    </script>
   </body>
 </html>

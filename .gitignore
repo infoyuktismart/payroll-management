@@ -24,6 +24,8 @@ dist-ssr
 *.sw?
 
 # Environment files
+.env
+.env.local
 .env.test
 .env.test.local
 
@@ -31,3 +33,13 @@ dist-ssr
 test-results/
 coverage/
 playwright-report/
+
+# Temporary and scratch files
+scratch_check.js
+scripts/content_2747.txt
+scripts/step_2747.json
+src/pages/emp_diff.txt
+supabase/.temp/
+scripts/extract_attachments.js
+scripts/find_original_form.js
+scripts/check_columns.js
