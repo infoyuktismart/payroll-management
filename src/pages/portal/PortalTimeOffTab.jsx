@@ -227,7 +227,7 @@ export default function PortalTimeOffTab({
                       key={mode.key}
                       type="button"
                       onClick={() => setWorkMode(mode.key)}
-                      className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-205 ${
+                      className={`px-4 py-2 rounded-lg text-[15px] font-semibold transition-all duration-205 ${
                         workMode === mode.key
                           ? 'bg-blue-600 text-white shadow'
                           : 'text-gray-600 hover:text-slate-800 hover:bg-slate-100'
@@ -385,7 +385,7 @@ export default function PortalTimeOffTab({
                   <button
                     key={item.key}
                     onClick={() => setTimeOffStatusFilter(item.key)}
-                    className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition ${timeOffStatusFilter === item.key ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:text-slate-900 hover:bg-slate-50'}`}
+                    className={`px-3 py-1.5 rounded-lg text-[15px] font-semibold transition ${timeOffStatusFilter === item.key ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:text-slate-900 hover:bg-slate-50'}`}
                   >
                     {item.label}
                   </button>

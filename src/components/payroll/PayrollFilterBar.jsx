@@ -57,7 +57,7 @@ export default function PayrollFilterBar({
                 key={type.key}
                 type="button"
                 onClick={() => setRunType(type.key)}
-                className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${
+                className={`px-3 py-1.5 rounded-lg text-[15px] font-semibold transition-all ${
                   runType === type.key
                     ? 'bg-slate-900 text-white shadow-sm'
                     : 'text-gray-600 hover:text-slate-900 hover:bg-white'

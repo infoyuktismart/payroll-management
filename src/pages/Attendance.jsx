@@ -670,7 +670,7 @@ export default function Attendance() {
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
-            className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 cursor-pointer ${
+            className={`px-4 py-2 text-[15px] font-semibold rounded-lg transition-all duration-200 cursor-pointer ${
               activeTab === tab.key
                 ? 'bg-blue-600 text-white shadow-sm'
                 : 'bg-white text-gray-600 hover:text-blue-700 hover:bg-blue-50'

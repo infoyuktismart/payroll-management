@@ -28,7 +28,7 @@ export default function LoansTable({
               key={tab}
               type="button"
               onClick={() => setActiveTab(tab)}
-              className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all capitalize ${
+              className={`px-4 py-2 rounded-lg text-[15px] font-semibold transition-all capitalize ${
                 activeTab === tab
                   ? 'bg-slate-900 text-white shadow-sm'
                   : 'bg-white text-gray-600 hover:text-slate-900 border border-gray-200'

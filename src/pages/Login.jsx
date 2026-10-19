@@ -1095,16 +1095,16 @@ export default function Login() {
           </div>
 
           {/* Tab Switcher */}
-          <div className="flex bg-slate-100/80 p-1 rounded-xl mb-3 text-sm font-semibold">
+          <div className="flex bg-slate-100/80 p-1 rounded-xl mb-3 text-[15px] font-semibold">
             <button
               onClick={() => setActiveTab('login')}
-              className={`flex-1 py-2 px-3 rounded-lg text-sm font-semibold transition-all duration-200 cursor-pointer ${activeTab === 'login' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+              className={`flex-1 py-2 px-3 rounded-lg text-[15px] font-semibold transition-all duration-200 cursor-pointer ${activeTab === 'login' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
             >
               Sign In
             </button>
             <button
               onClick={() => setActiveTab('signup')}
-              className={`flex-1 py-2 px-3 rounded-lg text-sm font-semibold transition-all duration-200 cursor-pointer ${activeTab === 'signup' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+              className={`flex-1 py-2 px-3 rounded-lg text-[15px] font-semibold transition-all duration-200 cursor-pointer ${activeTab === 'signup' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
             >
               Sign Up
             </button>

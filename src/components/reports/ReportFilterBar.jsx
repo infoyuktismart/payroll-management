@@ -28,7 +28,7 @@ export default function ReportFilterBar({ activeReportTab, setActiveReportTab, e
             key={tab.key}
             type="button"
             onClick={() => setActiveReportTab(tab.key)}
-            className={`px-4 py-2 rounded-lg text-sm font-semibold transition ${
+            className={`px-4 py-2 rounded-lg text-[15px] font-semibold transition ${
               activeReportTab === tab.key
                 ? 'bg-slate-900 text-white shadow-sm'
                 : 'text-gray-600 hover:text-slate-900 hover:bg-white'

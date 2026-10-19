@@ -121,14 +121,18 @@ export default function DashboardLayout() {
         { to: '/billing', icon: Receipt, label: 'Billing & Invoices', adminOnly: true },
         { to: '/company-settings', icon: Building, label: 'Company Settings', adminOnly: true },
         { to: '/settings', icon: Settings, label: 'Settings', adminOnly: true },
-        { to: '/superadmin', icon: Shield, label: 'Super Admin Analytics', superadminOnly: true },
+        { to: '/superadmin', icon: Shield, label: 'Super Admin & Licenses', superadminOnly: true },
       ],
     },
   ]
 
   const filterItem = (item) => {
     if (item.superadminOnly) {
-      return profileData?.role === 'superadmin'
+      return (
+        isSuperAdmin ||
+        profileData?.role === 'superadmin' ||
+        user?.user_metadata?.role === 'superadmin'
+      )
     }
     if (isAdmin) {
       const requiredFeature = ROUTE_FEATURES[item.to]

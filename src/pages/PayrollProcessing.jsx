@@ -439,19 +439,19 @@ export default function PayrollProcessing() {
         <div className="inline-flex items-center p-1 bg-white rounded-xl space-x-1 mb-6 border border-gray-200">
           <button
             onClick={() => setActiveTab('current_period')}
-            className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all ${activeTab === 'current_period' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:text-blue-700 hover:bg-blue-50'}`}
+            className={`px-4 py-2 text-[15px] font-semibold rounded-lg transition-all ${activeTab === 'current_period' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:text-blue-700 hover:bg-blue-50'}`}
           >
             Current Period
           </button>
           <button
             onClick={() => setActiveTab('history')}
-            className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all ${activeTab === 'history' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:text-blue-700 hover:bg-blue-50'}`}
+            className={`px-4 py-2 text-[15px] font-semibold rounded-lg transition-all ${activeTab === 'history' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:text-blue-700 hover:bg-blue-50'}`}
           >
             Payroll History
           </button>
           <button
             onClick={() => setActiveTab('delivery_logs')}
-            className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all ${activeTab === 'delivery_logs' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:text-blue-700 hover:bg-blue-50'}`}
+            className={`px-4 py-2 text-[15px] font-semibold rounded-lg transition-all ${activeTab === 'delivery_logs' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:text-blue-700 hover:bg-blue-50'}`}
           >
             Delivery Logs
           </button>

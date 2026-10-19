@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { Shield, RefreshCw } from 'lucide-react'
+import { Shield, RefreshCw, ShieldAlert } from 'lucide-react'
 import { formatCurrency } from '../lib/payrollUtils'
 import { useToast } from '../context/ToastContext'
 
@@ -47,6 +47,7 @@ export default function SuperAdminDashboard() {
       tenants: [],
       recentInvoices: [],
     },
+    error: metricsError,
     isLoading,
     isFetching,
     refetch,
@@ -129,6 +130,35 @@ export default function SuperAdminDashboard() {
           Refresh Analytics
         </button>
       </div>
+
+      {/* Permission Guidance Banner for Admins needing SuperAdmin promotion */}
+      {metricsError && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 shadow-sm space-y-3 animate-in fade-in duration-200">
+          <div className="flex items-start gap-3">
+            <div className="p-2 rounded-xl bg-amber-100 text-amber-800 shrink-0 mt-0.5">
+              <ShieldAlert className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="text-base font-black text-amber-900">
+                Super Admin Permissions Required
+              </h3>
+              <p className="text-xs text-amber-800 mt-1 leading-relaxed">
+                {metricsError.message ||
+                  'Your current account has Company Admin permissions, but managing cross-company workspaces and generating enterprise license keys requires platform-wide superadmin access.'}
+              </p>
+            </div>
+          </div>
+          <div className="p-3 bg-white rounded-xl border border-amber-200 font-mono text-xs text-slate-800 overflow-x-auto">
+            <code>
+              UPDATE public.profiles SET role = &apos;superadmin&apos; WHERE id = auth.uid();
+            </code>
+          </div>
+          <p className="text-[11px] text-amber-700">
+            Run the SQL query above in your Supabase SQL Editor to elevate your user account to
+            superadmin.
+          </p>
+        </div>
+      )}
 
       {/* Aggregated KPI Metrics Grid */}
       <SuperAdminStats stats={dashboard.stats} formatCurrency={formatCurrency} />

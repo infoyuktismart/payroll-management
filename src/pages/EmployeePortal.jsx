@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../lib/supabase'
 import { useToast } from '../context/ToastContext'
+import { useAuth } from '../context/AuthContext'
 import { applyCompanyFilter } from '../services/tenantScope'
 import { UserX, ShieldAlert } from 'lucide-react'
 import {
@@ -60,6 +61,7 @@ export default function EmployeePortal() {
   const navigate = useNavigate()
   const toast = useToast()
   const queryClient = useQueryClient()
+  const { user: authUser, isAdmin: authIsAdmin, profileData } = useAuth()
 
   const getPortalCache = () => {
     try {
@@ -326,49 +328,82 @@ export default function EmployeePortal() {
   useEffect(() => {
     const fetchCurrentEmployee = async () => {
       try {
-        if (cachedPortal?.currentEmployee) {
-          setCurrentEmployee(cachedPortal.currentEmployee)
-          setViewAsId(cachedPortal.viewAsId)
-          setIsAdmin(cachedPortal.isAdmin)
-          setEmployees(cachedPortal.employees || [])
-          return
-        }
-
-        const {
-          data: { user },
-        } = await supabase.auth.getUser()
+        const user = authUser || (await supabase.auth.getUser()).data?.user
         if (!user) {
           console.error('No user logged in')
           return
         }
 
-        const { data: emp, error } = await supabase
+        // 1. Try to find the user's personal employee record by user_id
+        let emp = null
+        const { data: empByUserId } = await supabase
           .from('employees')
           .select('*, id, registration_id')
           .eq('user_id', user.id)
-          .single()
+          .maybeSingle()
 
-        if (error || !emp) {
-          console.error('Employee not found for user:', error)
-          return
+        if (empByUserId) {
+          emp = empByUserId
+        } else if (user.email) {
+          // 2. Fallback: match by email within active company
+          const { data: empByEmail } = await applyCompanyFilter(
+            supabase.from('employees').select('*, id, registration_id').ilike('email', user.email)
+          ).maybeSingle()
+
+          if (empByEmail) {
+            emp = empByEmail
+            // Link the user_id asynchronously for future logins
+            supabase
+              .from('employees')
+              .update({ user_id: user.id })
+              .eq('id', emp.id)
+              .then(() => {})
+          }
         }
 
-        setCurrentEmployee(emp)
-        setViewAsId(emp.id)
+        const isUserAdmin = Boolean(
+          authIsAdmin ||
+          ['admin', 'hr', 'HR', 'superadmin', 'administrator'].includes(profileData?.role) ||
+          ['admin', 'hr', 'HR', 'superadmin', 'administrator'].includes(emp?.role)
+        )
 
-        if (['admin', 'hr', 'HR'].includes(emp.role)) {
+        if (isUserAdmin) {
           setIsAdmin(true)
+          // Fetch all active employees for this company so admin can view/switch between them
           const { data: allEmps } = await applyCompanyFilter(
-            supabase.from('employees').select('id, first_name, last_name, employee_id, designation')
-          ).eq('status', 'active')
-          if (allEmps) setEmployees(allEmps)
+            supabase
+              .from('employees')
+              .select('id, first_name, last_name, employee_id, designation, status, email')
+              .eq('is_deleted', false)
+              .order('created_at', { ascending: true })
+          )
+
+          if (allEmps && allEmps.length > 0) {
+            setEmployees(allEmps)
+            // If cachedPortal has a valid viewAsId matching one of the company's employees, restore it
+            const matchedCached = cachedPortal?.viewAsId
+              ? allEmps.find((e) => e.id === cachedPortal.viewAsId)
+              : null
+            const selected = matchedCached || emp || allEmps[0]
+            setCurrentEmployee(selected)
+            setViewAsId(selected.id)
+            return
+          }
+        }
+
+        // Standard employee without admin privileges
+        if (emp) {
+          setCurrentEmployee(emp)
+          setViewAsId(emp.id)
+          setEmployees([emp])
+          setIsAdmin(false)
         }
       } catch (error) {
         console.error('Error fetching employee identity:', error)
       }
     }
     fetchCurrentEmployee()
-  }, [])
+  }, [authUser, authIsAdmin, profileData])
 
   const handleApplyLeave = async () => {
     if (!leaveForm.type || !leaveForm.startDate || !leaveForm.endDate) {
@@ -445,23 +480,33 @@ export default function EmployeePortal() {
           <UserX className="w-7 h-7" />
         </div>
         <h3 className="text-lg font-black text-slate-900 tracking-tight">
-          No Employee Profile Found
+          No Employee Profiles Found
         </h3>
         <p className="text-sm text-slate-600 leading-relaxed max-w-md mx-auto">
-          Your account is signed in, but no employee record is linked to your user ID, and you do
-          not have administrator permissions.
+          {authIsAdmin
+            ? 'There are no active employees created in this workspace yet. Add employees in Employee Management to view and preview their self-service portal.'
+            : 'Your account is signed in, but no employee record is linked to your user ID or email.'}
         </p>
-        <div className="p-4 bg-slate-50 rounded-xl border border-slate-200/60 text-xs text-slate-600 text-left space-y-2">
-          <div className="flex items-center gap-2 font-bold text-slate-800">
-            <ShieldAlert className="w-4 h-4 text-indigo-600 shrink-0" />
-            <span>How to access the Full Admin Dashboard:</span>
+        {authIsAdmin ? (
+          <button
+            onClick={() => navigate('/employees')}
+            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-blue-700 cursor-pointer transition"
+          >
+            Go to Employee Management
+          </button>
+        ) : (
+          <div className="p-4 bg-slate-50 rounded-xl border border-slate-200/60 text-xs text-slate-600 text-left space-y-2">
+            <div className="flex items-center gap-2 font-bold text-slate-800">
+              <ShieldAlert className="w-4 h-4 text-indigo-600 shrink-0" />
+              <span>How to access the Full Admin Dashboard:</span>
+            </div>
+            <p className="text-slate-500 pl-6 leading-relaxed">
+              To unlock the complete admin dashboard (Employees, Payroll, Salaries, Settings), your
+              user must be set to <strong>admin</strong> in the Supabase <code>profiles</code> table
+              or linked to an active employee record with role <code>admin</code>.
+            </p>
           </div>
-          <p className="text-slate-500 pl-6 leading-relaxed">
-            To unlock the complete admin dashboard (Employees, Payroll, Salaries, Settings), your
-            user must be set to <strong>admin</strong> in the Supabase <code>profiles</code> table
-            or linked to an active employee record with role <code>admin</code>.
-          </p>
-        </div>
+        )}
       </div>
     )
   }

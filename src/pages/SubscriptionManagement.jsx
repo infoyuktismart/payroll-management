@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { CreditCard, Crown, RefreshCw, Save, Users, ArrowUpRight, KeyRound } from 'lucide-react'
+import {
+  CreditCard,
+  Crown,
+  RefreshCw,
+  Save,
+  Users,
+  ArrowUpRight,
+  KeyRound,
+  Shield,
+} from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { enterpriseAdminService } from '../services/enterpriseAdminService'
 import { auditService } from '../lib/auditService'
@@ -162,7 +171,16 @@ export default function SubscriptionManagement() {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => navigate('/superadmin')}
+            className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-slate-800 cursor-pointer transition"
+            title="Super Admin Portal: Issue license keys & manage platform tenants"
+          >
+            <Shield className="w-4 h-4 text-indigo-400" />
+            Super Admin Portal
+          </button>
           <button
             type="button"
             onClick={() => setIsRedeemModalOpen(true)}

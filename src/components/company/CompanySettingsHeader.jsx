@@ -39,7 +39,7 @@ export default function CompanySettingsHeader({
         <button
           type="button"
           onClick={() => setActiveTab('profile')}
-          className={`pb-3 font-semibold text-sm transition-all border-b-2 px-1 flex items-center gap-2 ${activeTab === 'profile' ? 'border-slate-900 text-slate-900' : 'border-transparent text-gray-600 hover:text-slate-800'}`}
+          className={`pb-3 font-semibold text-[15px] transition-all border-b-2 px-1 flex items-center gap-2 ${activeTab === 'profile' ? 'border-slate-900 text-slate-900' : 'border-transparent text-gray-600 hover:text-slate-800'}`}
         >
           <Building className="w-4 h-4" />
           Company Profile
@@ -47,7 +47,7 @@ export default function CompanySettingsHeader({
         <button
           type="button"
           onClick={() => setActiveTab('legal')}
-          className={`pb-3 font-semibold text-sm transition-all border-b-2 px-1 flex items-center gap-2 ${activeTab === 'legal' ? 'border-slate-900 text-slate-900' : 'border-transparent text-gray-600 hover:text-slate-800'}`}
+          className={`pb-3 font-semibold text-[15px] transition-all border-b-2 px-1 flex items-center gap-2 ${activeTab === 'legal' ? 'border-slate-900 text-slate-900' : 'border-transparent text-gray-600 hover:text-slate-800'}`}
         >
           <ShieldCheck className="w-4 h-4" />
           Legal & Compliance
@@ -61,7 +61,7 @@ export default function CompanySettingsHeader({
             }
             setActiveTab('branding')
           }}
-          className={`pb-3 font-semibold text-sm transition-all border-b-2 px-1 flex items-center gap-2 ${activeTab === 'branding' ? 'border-slate-900 text-slate-900' : 'border-transparent text-gray-600 hover:text-slate-800'} ${!canWhiteLabel ? 'opacity-50' : ''}`}
+          className={`pb-3 font-semibold text-[15px] transition-all border-b-2 px-1 flex items-center gap-2 ${activeTab === 'branding' ? 'border-slate-900 text-slate-900' : 'border-transparent text-gray-600 hover:text-slate-800'} ${!canWhiteLabel ? 'opacity-50' : ''}`}
         >
           <Globe className="w-4 h-4" />
           White-Labelling & Themes

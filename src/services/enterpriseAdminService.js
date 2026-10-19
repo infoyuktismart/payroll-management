@@ -61,14 +61,14 @@ export const enterpriseAdminService = {
           emptyOnMissing(supabase.from('subscription_plans').select('*').order('sort_order')),
           singleOrNullOnMissing(
             applyCompanyFilter(
-              supabase.from('company_subscriptions').select('*, plan:subscription_plans(*)')
-            ).maybeSingle(),
-            activeCompanyId
+              supabase.from('company_subscriptions').select('*, plan:subscription_plans(*)'),
+              companyId
+            ).maybeSingle()
           ),
           emptyOnMissing(
             applyCompanyFilter(
               supabase.from('subscription_usage_counters').select('*').order('metric_key'),
-              activeCompanyId
+              companyId
             )
           ),
           emptyOnMissing(supabase.from('companies').select('id', { count: 'exact', head: true })),
@@ -78,7 +78,7 @@ export const enterpriseAdminService = {
                 .from('employees')
                 .select('id', { count: 'exact', head: true })
                 .eq('is_deleted', false),
-              activeCompanyId
+              companyId
             )
           ),
           emptyOnMissing(

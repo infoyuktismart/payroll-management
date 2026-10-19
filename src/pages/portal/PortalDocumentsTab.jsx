@@ -491,7 +491,7 @@ export default function PortalDocumentsTab({ currentEmployee, viewAsId, toast })
           <button
             key={tab.key}
             onClick={() => setDocumentCategory(tab.key)}
-            className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all ${documentCategory === tab.key ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:bg-slate-50'}`}
+            className={`px-4 py-2 rounded-lg text-[15px] font-semibold transition-all ${documentCategory === tab.key ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:bg-slate-50'}`}
           >
             {tab.label}
           </button>
