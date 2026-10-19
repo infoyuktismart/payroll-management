@@ -47,6 +47,7 @@ An enterprise-grade, multi-tenant Human Resource Management System (HRMS) and au
 - **Flexible Billing Models**: Support for Flat Monthly pricing and Per-Employee Per-Month (PEPM) headcount billing.
 - **Razorpay Checkout & Webhooks**: Integrated payment gateway with Content Security Policy (CSP) compatibility, modal checkout, and server-to-server webhook reconciliation (`payment.captured`, `order.paid`).
 - **Feature Entitlements**: Automated plan gates for **Starter** (₹149/emp), **Growth** (₹129/emp), and **Enterprise** (₹99/emp) tiers.
+- **Enterprise License Key Activation**: Secure voucher & offline key redemption engine (`YUKTI-<PLAN>-XXXX-XXXX-XXXX`). Supports pre-expiry plan extensions, post-trial workspace reactivations, atomic PostgreSQL row-locking validation, automated zero-balance audit invoice generation, and SuperAdmin key generator/revocation controls.
 - **Automated Tax Invoicing**: Sequential invoice generation (`INV-YYYYMM-XXXX`) with 18% GST itemization, payment receipts, and PDF print exports.
 
 ### 6. Employee Self-Service (ESS) Portal

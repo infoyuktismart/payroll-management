@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { CreditCard, Crown, RefreshCw, Save, Users, ArrowUpRight } from 'lucide-react'
+import { CreditCard, Crown, RefreshCw, Save, Users, ArrowUpRight, KeyRound } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { enterpriseAdminService } from '../services/enterpriseAdminService'
 import { auditService } from '../lib/auditService'
 import { formatCurrency } from '../lib/payrollUtils'
 import { useToast } from '../context/ToastContext'
 import { useCompany } from '../context/CompanyContext'
+import RedeemLicenseModal from '../components/subscription/RedeemLicenseModal'
 
 export default function SubscriptionManagement() {
   const toast = useToast()
@@ -16,6 +17,7 @@ export default function SubscriptionManagement() {
   const isSuperAdmin = profileData?.role === 'superadmin'
   const queryClient = useQueryClient()
   const { activeCompanyId, selectedBranch } = useCompany()
+  const [isRedeemModalOpen, setIsRedeemModalOpen] = useState(false)
   const [form, setForm] = useState({
     plan_id: '',
     status: 'trialing',
@@ -160,14 +162,24 @@ export default function SubscriptionManagement() {
             </p>
           </div>
         </div>
-        <button
-          onClick={refreshUsage}
-          disabled={loading}
-          className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50"
-        >
-          <RefreshCw className="w-4 h-4" />
-          Refresh Usage
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setIsRedeemModalOpen(true)}
+            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-black text-white shadow-sm hover:bg-blue-700 cursor-pointer transition"
+          >
+            <KeyRound className="w-4 h-4" />
+            Redeem License Key
+          </button>
+          <button
+            onClick={refreshUsage}
+            disabled={loading}
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Refresh Usage
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-6">
@@ -377,10 +389,25 @@ export default function SubscriptionManagement() {
                 View Invoices & Settle Payment
                 <ArrowUpRight className="w-4 h-4 text-slate-400" />
               </button>
+
+              <button
+                type="button"
+                onClick={() => setIsRedeemModalOpen(true)}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm font-bold text-blue-700 hover:bg-blue-100 cursor-pointer transition"
+              >
+                <KeyRound className="w-4 h-4 text-blue-600" />
+                Have a License Key? Activate Here
+              </button>
             </div>
           )}
         </div>
       </div>
+
+      <RedeemLicenseModal
+        isOpen={isRedeemModalOpen}
+        onClose={() => setIsRedeemModalOpen(false)}
+        activeCompanyId={activeCompanyId}
+      />
     </div>
   )
 }
