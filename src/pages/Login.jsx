@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
@@ -344,23 +344,6 @@ function LoginForm({ onSwitchToSignup }) {
   const [loading, setLoading] = useState(false)
   const [verifyingOtp, setVerifyingOtp] = useState(false)
   const [resendingOtp, setResendingOtp] = useState(false)
-  const [cooldown, setCooldown] = useState(0)
-  const cooldownRef = useRef(null)
-
-  function startCooldown(seconds = 30) {
-    setCooldown(seconds)
-    cooldownRef.current = setInterval(() => {
-      setCooldown((prev) => {
-        if (prev <= 1) {
-          clearInterval(cooldownRef.current)
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
-  }
-
-  useEffect(() => () => clearInterval(cooldownRef.current), [])
 
   const {
     signIn,
@@ -487,7 +470,6 @@ function LoginForm({ onSwitchToSignup }) {
       await routeAfterLogin(signedInIsSuperAdmin ? 'superadmin' : signedInIsAdmin ? 'admin' : null)
     } catch (err) {
       setError(getLoginErrorMessage(err))
-      startCooldown(30)
     } finally {
       setLoading(false)
     }
@@ -594,11 +576,11 @@ function LoginForm({ onSwitchToSignup }) {
 
         <button
           type="submit"
-          disabled={loading || cooldown > 0}
+          disabled={loading}
           className="w-full mt-1 py-2.5 px-4 bg-linear-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 active:scale-[0.99] text-white text-sm font-semibold rounded-xl shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 flex items-center justify-center gap-2"
         >
-          {cooldown > 0 ? `Try again in ${cooldown}s` : loading ? 'Signing in...' : 'Sign In'}
-          {!loading && cooldown === 0 && <ArrowRight className="w-4 h-4 opacity-80" />}
+          {loading ? 'Signing in...' : 'Sign In'}
+          {!loading && <ArrowRight className="w-4 h-4 opacity-80" />}
         </button>
 
         <div className="relative my-2.5">
