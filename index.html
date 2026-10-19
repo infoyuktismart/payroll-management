@@ -4,13 +4,13 @@
     <!-- TODO: Tighten CSP by using cryptographic nonces for script-src/style-src in production instead of 'unsafe-inline' and 'unsafe-eval' -->
     <meta http-equiv="Content-Security-Policy" content="
       default-src 'self';
-      script-src 'self' 'unsafe-inline' 'unsafe-eval';
+      script-src 'self' 'unsafe-inline' 'unsafe-eval' https://checkout.razorpay.com;
       style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
-      connect-src 'self' ws://localhost:* ws://127.0.0.1:* ws://[::1]:* https://*.supabase.co wss://*.supabase.co https://sentry.io https://api.ipify.org;
-      img-src 'self' data: blob: https://*.supabase.co;
+      connect-src 'self' ws://localhost:* ws://127.0.0.1:* ws://[::1]:* https://*.supabase.co wss://*.supabase.co https://sentry.io https://api.ipify.org https://api.razorpay.com https://lumberjack.razorpay.com;
+      img-src 'self' data: blob: https://*.supabase.co https://cdn.razorpay.com;
       font-src 'self' https://fonts.gstatic.com;
       worker-src 'self' blob:;
-      frame-src 'none';
+      frame-src 'self' https://api.razorpay.com https://checkout.razorpay.com;
       object-src 'none';
     ">
     <meta charset="UTF-8" />
