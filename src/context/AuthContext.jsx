@@ -947,18 +947,24 @@ export const AuthProvider = ({ children }) => {
     getTwoFactorSettings,
     signUp: (data) => supabase.auth.signUp(data),
     signOut: async (options) => {
-      await logSecurityEvent(options?.scope === 'global' ? 'global_logout' : 'logout')
-      clearTwoFactorVerified()
-      if (typeof window !== 'undefined') {
-        try {
-          localStorage.removeItem('payroll_auth_is_admin')
-          localStorage.removeItem('payroll_auth_profile_data')
-          sessionStorage.removeItem('employee_portal_cache')
-        } catch (err) {
-          devLog('Failed to clear cached auth state:', err)
+      const currentUser = userRef.current
+      clearCachedAuthState()
+      const logPromise = logSecurityEvent(
+        options?.scope === 'global' ? 'global_logout' : 'logout',
+        {
+          userId: currentUser?.id,
+          email: currentUser?.email,
         }
-      }
-      return supabase.auth.signOut(options)
+      ).catch((err) => devLog('SignOut audit log error:', err?.message))
+
+      const signOutPromise = supabase.auth
+        .signOut(options)
+        .catch((err) => devLog('Supabase signOut error:', err?.message))
+
+      await Promise.race([
+        Promise.all([logPromise, signOutPromise]),
+        new Promise((resolve) => setTimeout(resolve, 150)),
+      ])
     },
   }
 

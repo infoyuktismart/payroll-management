@@ -64,8 +64,8 @@ export default function DashboardLayout() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
 
   const handleSignOut = async () => {
+    navigate('/login', { replace: true })
     await signOut()
-    navigate('/login')
   }
 
   // Categorized Navigation Architecture
