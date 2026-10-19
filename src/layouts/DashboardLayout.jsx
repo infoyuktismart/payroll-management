@@ -40,7 +40,7 @@ const SidebarItem = ({ to, icon: Icon, label, active, onClick }) => (
     to={to}
     onClick={onClick}
     className={clsx(
-      'flex items-center space-x-3 px-3 py-2 rounded-xl transition-all duration-150 group focus:outline-none focus:ring-2 focus:ring-slate-400 text-xs font-semibold',
+      'flex items-center space-x-3 px-3 py-2.5 rounded-xl transition-all duration-150 group focus:outline-none focus:ring-2 focus:ring-slate-400 text-sm font-semibold',
       active
         ? 'bg-slate-900 text-white shadow-sm'
         : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
@@ -49,11 +49,11 @@ const SidebarItem = ({ to, icon: Icon, label, active, onClick }) => (
   >
     <Icon
       className={clsx(
-        'w-4 h-4 shrink-0 transition-colors duration-150',
+        'w-4.5 h-4.5 shrink-0 transition-colors duration-150',
         active ? 'text-white' : 'text-slate-400 group-hover:text-slate-700'
       )}
     />
-    <span className="truncate tracking-tight">{label}</span>
+    <span className="truncate tracking-tight text-sm font-semibold">{label}</span>
   </Link>
 )
 
@@ -229,7 +229,7 @@ export default function DashboardLayout() {
         <nav className="p-3 space-y-4 overflow-y-auto flex-1 min-h-0">
           {groupedNav.map((cat) => (
             <div key={cat.title} className="space-y-1">
-              <p className="px-3 py-1 text-[10px] font-black uppercase tracking-wider text-slate-400">
+              <p className="px-3 py-1.5 text-[11px] font-black uppercase tracking-wider text-slate-400">
                 {cat.title}
               </p>
               {cat.items.map((item) => (
@@ -247,10 +247,10 @@ export default function DashboardLayout() {
         <div className="p-3 border-t border-gray-100 shrink-0">
           <button
             onClick={handleSignOut}
-            className="w-full flex items-center space-x-3 px-3 py-2 rounded-xl text-gray-500 hover:bg-rose-50 hover:text-rose-600 transition-all duration-200 group focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer text-xs font-semibold"
+            className="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-gray-500 hover:bg-rose-50 hover:text-rose-600 transition-all duration-200 group focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer text-sm font-semibold"
             aria-label="Sign out"
           >
-            <LogOut className="w-4 h-4 transition-colors text-gray-400 group-hover:text-rose-600" />
+            <LogOut className="w-4.5 h-4.5 transition-colors text-gray-400 group-hover:text-rose-600" />
             <span>Sign Out</span>
           </button>
         </div>
