@@ -411,8 +411,13 @@ function LoginForm({ onSwitchToSignup }) {
     }
   }
 
-  const routeAfterLogin = async (knownIsAdmin = null) => {
-    if (knownIsAdmin === true) {
+  const routeAfterLogin = async (knownRole = null) => {
+    if (knownRole === 'superadmin') {
+      navigate('/superadmin', { replace: true })
+      return
+    }
+
+    if (knownRole === 'admin' || knownRole === true) {
       navigate('/dashboard', { replace: true })
       return
     }
@@ -423,12 +428,8 @@ function LoginForm({ onSwitchToSignup }) {
 
     if (user) {
       const meta = user.user_metadata || {}
-      const isMetaAdmin = Boolean(
-        meta.trial_admin || meta.role === 'admin' || meta.role === 'superadmin' || meta.is_admin
-      )
-
-      if (isMetaAdmin) {
-        navigate('/dashboard', { replace: true })
+      if (meta.role === 'superadmin') {
+        navigate('/superadmin', { replace: true })
         return
       }
 
@@ -447,10 +448,14 @@ function LoginForm({ onSwitchToSignup }) {
       ])
 
       const role =
-        empRes.data?.role ||
-        profileRes.data?.role ||
-        memRes.data?.role ||
-        (isMetaAdmin ? 'admin' : '')
+        profileRes.data?.role || meta.role || memRes.data?.role || empRes.data?.role || ''
+
+      if (role === 'superadmin') {
+        navigate('/superadmin', { replace: true })
+        return
+      }
+
+      const isMetaAdmin = Boolean(meta.trial_admin || meta.role === 'admin' || meta.is_admin)
       const isUserAdmin = isMetaAdmin || isAdminRole(role)
 
       navigate(isUserAdmin ? '/dashboard' : '/portal', { replace: true })
@@ -469,6 +474,7 @@ function LoginForm({ onSwitchToSignup }) {
         error: signInError,
         twoFactorRequired,
         isAdmin: signedInIsAdmin,
+        isSuperAdmin: signedInIsSuperAdmin,
       } = await signIn({ email, password })
       if (signInError) throw signInError
 
@@ -478,7 +484,7 @@ function LoginForm({ onSwitchToSignup }) {
         return
       }
 
-      await routeAfterLogin(signedInIsAdmin)
+      await routeAfterLogin(signedInIsSuperAdmin ? 'superadmin' : signedInIsAdmin ? 'admin' : null)
     } catch (err) {
       setError(getLoginErrorMessage(err))
       startCooldown(30)

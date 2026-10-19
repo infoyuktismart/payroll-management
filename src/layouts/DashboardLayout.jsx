@@ -7,6 +7,7 @@ import BranchSwitcher from '../components/BranchSwitcher'
 import { ROUTE_FEATURES } from '../lib/planFeatures'
 import { SubscriptionHeaderPill } from '../components/SubscriptionStatusBanner'
 import { usePlanEntitlements } from '../hooks/usePlanEntitlements'
+import SuperAdminWorkspaceBanner from '../components/superadmin/SuperAdminWorkspaceBanner'
 import {
   LayoutDashboard,
   Users,
@@ -57,11 +58,22 @@ const SidebarItem = ({ to, icon: Icon, label, active, onClick }) => (
 )
 
 export default function DashboardLayout() {
-  const { signOut, user, isAdmin, profileData } = useAuth()
-  const { loading: entitlementLoading, canUseFeature, isSuperAdmin } = usePlanEntitlements()
+  const { signOut, user, isAdmin, profileData, isSuperAdmin: authIsSuperAdmin } = useAuth()
+  const {
+    loading: entitlementLoading,
+    canUseFeature,
+    isSuperAdmin: planIsSuperAdmin,
+  } = usePlanEntitlements()
   const location = useLocation()
   const navigate = useNavigate()
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
+
+  const isSuperAdmin = Boolean(
+    authIsSuperAdmin ||
+    planIsSuperAdmin ||
+    profileData?.role === 'superadmin' ||
+    user?.user_metadata?.role === 'superadmin'
+  )
 
   const handleSignOut = async () => {
     navigate('/login', { replace: true })
@@ -121,7 +133,12 @@ export default function DashboardLayout() {
         { to: '/billing', icon: Receipt, label: 'Billing & Invoices', adminOnly: true },
         { to: '/company-settings', icon: Building, label: 'Company Settings', adminOnly: true },
         { to: '/settings', icon: Settings, label: 'Settings', adminOnly: true },
-        { to: '/superadmin', icon: Shield, label: 'Super Admin & Licenses', superadminOnly: true },
+        {
+          to: '/superadmin',
+          icon: Shield,
+          label: 'Platform Console (Super Admin)',
+          superadminOnly: true,
+        },
       ],
     },
   ]
@@ -264,6 +281,28 @@ export default function DashboardLayout() {
           </div>
 
           <div className="flex items-center space-x-3 lg:space-x-4">
+            {isSuperAdmin &&
+              (location.pathname === '/superadmin' ? (
+                <button
+                  type="button"
+                  onClick={() => navigate('/dashboard')}
+                  className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 transition cursor-pointer"
+                  title="Switch to Client Workspace HRMS"
+                >
+                  <Building className="w-3.5 h-3.5 text-slate-500" />
+                  <span>Client HRMS</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => navigate('/superadmin')}
+                  className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white transition shadow-xs cursor-pointer border border-slate-800"
+                  title="Return to Super Admin Central Console"
+                >
+                  <Shield className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Platform Console</span>
+                </button>
+              ))}
             {isAdmin && (
               <div className="flex items-center space-x-2 lg:space-x-3">
                 {canUseFeature('multi_company') && <CompanySwitcher />}
@@ -294,6 +333,9 @@ export default function DashboardLayout() {
             </div>
           </div>
         </header>
+
+        {/* Super Admin Platform Operator Banner */}
+        <SuperAdminWorkspaceBanner />
 
         <main className="flex-1 overflow-y-auto p-4 lg:p-8 bg-gray-100">
           <div className="max-w-7xl mx-auto">

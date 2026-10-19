@@ -1,7 +1,9 @@
 import { useState, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Shield, RefreshCw, ShieldAlert } from 'lucide-react'
 import { formatCurrency } from '../lib/payrollUtils'
 import { useToast } from '../context/ToastContext'
+import { useCompany } from '../context/CompanyContext'
 
 // Services & Hooks
 import {
@@ -20,9 +22,18 @@ import SuperAdminLicenseKeys from '../components/superadmin/SuperAdminLicenseKey
 
 export default function SuperAdminDashboard() {
   const toast = useToast()
+  const navigate = useNavigate()
+  const { switchCompany } = useCompany()
   const [actionLoading, setActionLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
+
+  const handleInspectWorkspace = (tenant) => {
+    if (!tenant?.id) return
+    switchCompany(tenant.id)
+    toast.success(`Switched context to ${tenant.company_name}. Opening HRMS workspace...`)
+    navigate('/dashboard')
+  }
 
   // Tenant override modal state
   const [editingTenant, setEditingTenant] = useState(null)
@@ -176,6 +187,7 @@ export default function SuperAdminDashboard() {
           statusFilter={statusFilter}
           setStatusFilter={setStatusFilter}
           onManagePlan={handleEditTenant}
+          onInspectWorkspace={handleInspectWorkspace}
           formatCurrency={formatCurrency}
         />
 

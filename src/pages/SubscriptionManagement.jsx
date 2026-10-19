@@ -22,8 +22,12 @@ import RedeemLicenseModal from '../components/subscription/RedeemLicenseModal'
 export default function SubscriptionManagement() {
   const toast = useToast()
   const navigate = useNavigate()
-  const { profileData } = useAuth()
-  const isSuperAdmin = profileData?.role === 'superadmin'
+  const { profileData, isSuperAdmin: authIsSuperAdmin, user } = useAuth()
+  const isSuperAdmin = Boolean(
+    authIsSuperAdmin ||
+    profileData?.role === 'superadmin' ||
+    user?.user_metadata?.role === 'superadmin'
+  )
   const queryClient = useQueryClient()
   const { activeCompanyId, selectedBranch } = useCompany()
   const [isRedeemModalOpen, setIsRedeemModalOpen] = useState(false)
