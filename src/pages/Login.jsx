@@ -411,7 +411,12 @@ function LoginForm({ onSwitchToSignup }) {
     }
   }
 
-  const routeAfterLogin = async () => {
+  const routeAfterLogin = async (knownIsAdmin = null) => {
+    if (knownIsAdmin === true) {
+      navigate('/dashboard', { replace: true })
+      return
+    }
+
     const {
       data: { user },
     } = await supabase.auth.getUser()
@@ -421,6 +426,11 @@ function LoginForm({ onSwitchToSignup }) {
       const isMetaAdmin = Boolean(
         meta.trial_admin || meta.role === 'admin' || meta.role === 'superadmin' || meta.is_admin
       )
+
+      if (isMetaAdmin) {
+        navigate('/dashboard', { replace: true })
+        return
+      }
 
       const [empRes, profileRes, memRes] = await Promise.all([
         supabase
@@ -443,9 +453,9 @@ function LoginForm({ onSwitchToSignup }) {
         (isMetaAdmin ? 'admin' : '')
       const isUserAdmin = isMetaAdmin || isAdminRole(role)
 
-      navigate(isUserAdmin ? '/dashboard' : '/portal')
+      navigate(isUserAdmin ? '/dashboard' : '/portal', { replace: true })
     } else {
-      navigate('/dashboard')
+      navigate('/dashboard', { replace: true })
     }
   }
 
@@ -455,7 +465,11 @@ function LoginForm({ onSwitchToSignup }) {
     setLoading(true)
 
     try {
-      const { error: signInError, twoFactorRequired } = await signIn({ email, password })
+      const {
+        error: signInError,
+        twoFactorRequired,
+        isAdmin: signedInIsAdmin,
+      } = await signIn({ email, password })
       if (signInError) throw signInError
 
       if (twoFactorRequired) {
@@ -464,7 +478,7 @@ function LoginForm({ onSwitchToSignup }) {
         return
       }
 
-      await routeAfterLogin()
+      await routeAfterLogin(signedInIsAdmin)
     } catch (err) {
       setError(getLoginErrorMessage(err))
       startCooldown(30)
@@ -998,16 +1012,17 @@ function SignupForm({ onSwitchToLogin }) {
 export default function Login() {
   const [activeTab, setActiveTab] = useState('login')
   const [isFirstRun, setIsFirstRun] = useState(false)
-  const { user, loading, isAdmin, twoFactorChallenge, isTwoFactorVerified } = useAuth()
+  const { user, loading, isRoleLoading, isAdmin, twoFactorChallenge, isTwoFactorVerified } =
+    useAuth()
   const navigate = useNavigate()
 
   useEffect(() => {
     const pendingTwoFactor =
       user && twoFactorChallenge?.userId === user.id && !isTwoFactorVerified(user.id)
-    if (!loading && user && !pendingTwoFactor) {
+    if (!loading && !isRoleLoading && user && !pendingTwoFactor) {
       navigate(isAdmin ? '/dashboard' : '/portal', { replace: true })
     }
-  }, [loading, user, isAdmin, twoFactorChallenge, isTwoFactorVerified, navigate])
+  }, [loading, isRoleLoading, user, isAdmin, twoFactorChallenge, isTwoFactorVerified, navigate])
 
   useEffect(() => {
     const checkFirstRunStatus = async () => {

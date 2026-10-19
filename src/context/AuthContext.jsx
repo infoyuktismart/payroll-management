@@ -143,6 +143,18 @@ export const AuthProvider = ({ children }) => {
       return false
     }
   })
+  const [isRoleLoading, setIsRoleLoading] = useState(() => {
+    if (typeof window === 'undefined') return false
+    try {
+      const keys = Object.keys(localStorage)
+      const hasToken = keys.some((key) => key.startsWith('sb-') && key.endsWith('-auth-token'))
+      if (!hasToken) return false
+      const cached = localStorage.getItem('payroll_auth_is_admin')
+      return cached === null
+    } catch {
+      return false
+    }
+  })
   const [profileData, setProfileData] = useState(() => {
     if (typeof window === 'undefined') return null
     try {
@@ -210,7 +222,7 @@ export const AuthProvider = ({ children }) => {
     return data
   }
 
-  const checkRole = async (userId) => {
+  const checkRole = async (userId, userObj = null) => {
     const now = Date.now()
     if (
       lastRoleCheckRef.current.userId === userId &&
@@ -220,25 +232,41 @@ export const AuthProvider = ({ children }) => {
     ) {
       devLog('AuthContext: Skipping duplicate role check for:', userId)
       setLoading(false)
-      return
+      setIsRoleLoading(false)
+      return isAdmin
     }
     lastRoleCheckRef.current = { userId, at: now }
 
     try {
-      // Do not set loading to true here as it causes the entire React tree to unmount and lose state during updates.
       devLog('AuthContext: Starting checkRole for:', userId)
       let isUserAdmin = false
       let finalProfileData = null
 
-      // 1. Fetch current authenticated user to inspect metadata
-      const {
-        data: { user: currentUser },
-      } = await supabase.auth.getUser()
+      // 1. Fetch current authenticated user or use passed/cached user to inspect metadata
+      let currentUser = userObj || userRef.current
+      if (!currentUser) {
+        const { data } = await supabase.auth.getUser()
+        currentUser = data?.user
+      }
       const userEmail = currentUser?.email?.toLowerCase()?.trim() || ''
       const meta = currentUser?.user_metadata || {}
       const isMetaAdmin = Boolean(
         meta.trial_admin || meta.role === 'admin' || meta.role === 'superadmin' || meta.is_admin
       )
+
+      // Fast-path: If user metadata already confirms admin, set admin immediately to prevent portal flash
+      if (isMetaAdmin) {
+        isUserAdmin = true
+        setIsAdmin(true)
+        setIsRoleLoading(false)
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem('payroll_auth_is_admin', 'true')
+          } catch (err) {
+            devLog('Failed to save admin flag to localStorage:', err)
+          }
+        }
+      }
 
       // 2. Execute profile, employee, and company membership lookups in parallel
       const [profileRes, employeeRes, membershipRes] = await Promise.all([
@@ -365,7 +393,9 @@ export const AuthProvider = ({ children }) => {
         }
       }
 
+      setIsRoleLoading(false)
       setLoading(false)
+      return isUserAdmin
     } catch (e) {
       logger.error('Error in AuthContext checkRole:', e)
       if (typeof window !== 'undefined' && (!navigator.onLine || !isInvalidSessionError(e))) {
@@ -385,12 +415,15 @@ export const AuthProvider = ({ children }) => {
           }
         }
       }
+      setIsRoleLoading(false)
       setLoading(false)
+      return false
     }
   }
 
   const clearCachedAuthState = useCallback(() => {
     setIsAdmin(false)
+    setIsRoleLoading(false)
     setProfileData(null)
     setSession(null)
     setUser(null)
@@ -403,6 +436,7 @@ export const AuthProvider = ({ children }) => {
         localStorage.removeItem('payroll_auth_is_admin')
         localStorage.removeItem('payroll_auth_profile_data')
         localStorage.removeItem(AUTH_LAST_ACTIVITY_KEY)
+        sessionStorage.removeItem('employee_portal_cache')
       } catch (err) {
         devLog('Failed to clear cached auth state:', err)
       }
@@ -499,24 +533,70 @@ export const AuthProvider = ({ children }) => {
       userRef.current = verifiedUser || null
       setUser(verifiedUser || null)
     }
+
+    if (verifiedUser) {
+      const meta = verifiedUser.user_metadata || {}
+      const isMetaAdmin = Boolean(
+        meta.trial_admin || meta.role === 'admin' || meta.role === 'superadmin' || meta.is_admin
+      )
+      if (isMetaAdmin) {
+        setIsAdmin(true)
+        setIsRoleLoading(false)
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem('payroll_auth_is_admin', 'true')
+          } catch (err) {
+            devLog('Failed to save admin flag to localStorage:', err)
+          }
+        }
+      }
+    }
   }, [])
 
   const signIn = async (credentials) => {
     clearTwoFactorVerified()
+    setIsRoleLoading(true)
 
     const response = await supabase.auth.signInWithPassword(credentials)
-    if (response.error) return response
+    if (response.error) {
+      setIsRoleLoading(false)
+      return response
+    }
     recordActivity(true)
 
     const signedInUser = response.data?.user
     await logSecurityEvent('password_login', { email: credentials.email, userId: signedInUser?.id })
 
-    if (!signedInUser?.id) return response
+    if (!signedInUser?.id) {
+      setIsRoleLoading(false)
+      return response
+    }
+
+    // Instantly detect admin from metadata to prevent any flash of non-admin UI
+    const meta = signedInUser.user_metadata || {}
+    const isMetaAdmin = Boolean(
+      meta.trial_admin || meta.role === 'admin' || meta.role === 'superadmin' || meta.is_admin
+    )
+    if (isMetaAdmin) {
+      setIsAdmin(true)
+      setIsRoleLoading(false)
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('payroll_auth_is_admin', 'true')
+        } catch (err) {
+          devLog('Failed to save admin flag to localStorage:', err)
+        }
+      }
+    }
 
     const settings = await getTwoFactorSettings(signedInUser.id)
     if (!settings?.enabled) {
       markTwoFactorVerified(signedInUser.id)
-      return response
+      const roleResult = await checkRole(signedInUser.id, signedInUser)
+      return {
+        ...response,
+        isAdmin: typeof roleResult === 'boolean' ? roleResult : isMetaAdmin,
+      }
     }
 
     const otpResponse = await supabase.auth.signInWithOtp({
@@ -540,6 +620,7 @@ export const AuthProvider = ({ children }) => {
       data: response.data,
       error: null,
       twoFactorRequired: true,
+      isAdmin: isMetaAdmin,
     }
   }
 
@@ -852,8 +933,10 @@ export const AuthProvider = ({ children }) => {
     session,
     user,
     loading,
+    isRoleLoading,
     isAdmin,
     profileData,
+    checkRole,
     twoFactorChallenge,
     isTwoFactorVerified,
     signIn,
@@ -870,6 +953,7 @@ export const AuthProvider = ({ children }) => {
         try {
           localStorage.removeItem('payroll_auth_is_admin')
           localStorage.removeItem('payroll_auth_profile_data')
+          sessionStorage.removeItem('employee_portal_cache')
         } catch (err) {
           devLog('Failed to clear cached auth state:', err)
         }

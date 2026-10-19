@@ -6,63 +6,83 @@ import { usePlanEntitlements } from '../hooks/usePlanEntitlements'
 import PlanRestricted from './PlanRestricted'
 
 export default function ProtectedRoute({ children }) {
-    const { user, loading, isAdmin, profileData, twoFactorChallenge, isTwoFactorVerified } = useAuth()
-    const location = useLocation()
-    const requiredFeature = ROUTE_FEATURES[location.pathname]
-    const shouldCheckEntitlements = Boolean(isAdmin && requiredFeature && profileData?.role !== 'superadmin')
-    const { loading: entitlementLoading, entitlements, canUseFeature } = usePlanEntitlements({
-        enabled: shouldCheckEntitlements
-    })
+  const {
+    user,
+    loading,
+    isRoleLoading,
+    isAdmin,
+    profileData,
+    twoFactorChallenge,
+    isTwoFactorVerified,
+  } = useAuth()
+  const location = useLocation()
+  const requiredFeature = ROUTE_FEATURES[location.pathname]
+  const shouldCheckEntitlements = Boolean(
+    isAdmin && requiredFeature && profileData?.role !== 'superadmin'
+  )
+  const {
+    loading: entitlementLoading,
+    entitlements,
+    canUseFeature,
+  } = usePlanEntitlements({
+    enabled: shouldCheckEntitlements,
+  })
 
-    if (loading) {
-        devLog('ProtectedRoute: Loading...')
-        return (
-            <div
-                role="status"
-                aria-live="polite"
-                aria-label="Loading application"
-                className="min-h-screen flex items-center justify-center"
-            >
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" aria-hidden="true" />
-                <span className="sr-only">Loading application, please wait...</span>
-            </div>
-        )
+  if (loading || isRoleLoading) {
+    devLog('ProtectedRoute: Loading auth or role determination...')
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        aria-label="Loading application"
+        className="min-h-screen flex items-center justify-center"
+      >
+        <div
+          className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"
+          aria-hidden="true"
+        />
+        <span className="sr-only">Loading application, please wait...</span>
+      </div>
+    )
+  }
+
+  devLog('ProtectedRoute Check:', { pathname: location.pathname, user: !!user, isAdmin })
+
+  if (!user) {
+    return <Navigate to="/login" replace />
+  }
+
+  if (twoFactorChallenge?.userId === user.id && !isTwoFactorVerified(user.id)) {
+    return <Navigate to="/login" replace />
+  }
+
+  if (!isAdmin && location.pathname !== '/portal') {
+    devLog('ProtectedRoute: Non-admin detected at:', location.pathname, '- Redirecting to /portal')
+    return <Navigate to="/portal" replace />
+  }
+
+  if (isAdmin && requiredFeature && profileData?.role !== 'superadmin') {
+    if (entitlementLoading) {
+      return (
+        <div
+          role="status"
+          aria-live="polite"
+          aria-label="Checking subscription"
+          className="min-h-screen flex items-center justify-center"
+        >
+          <div
+            className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"
+            aria-hidden="true"
+          />
+          <span className="sr-only">Checking subscription access...</span>
+        </div>
+      )
     }
 
-    devLog('ProtectedRoute Check:', { pathname: location.pathname, user: !!user, isAdmin })
-
-    if (!user) {
-        return <Navigate to="/login" replace />
+    if (!canUseFeature(requiredFeature)) {
+      return <PlanRestricted featureKey={requiredFeature} planName={entitlements?.plan?.name} />
     }
+  }
 
-    if (twoFactorChallenge?.userId === user.id && !isTwoFactorVerified(user.id)) {
-        return <Navigate to="/login" replace />
-    }
-
-    if (!isAdmin && location.pathname !== '/portal') {
-        devLog('ProtectedRoute: Non-admin detected at:', location.pathname, '- Redirecting to /portal')
-        return <Navigate to="/portal" replace />
-    }
-
-    if (isAdmin && requiredFeature && profileData?.role !== 'superadmin') {
-        if (entitlementLoading) {
-            return (
-                <div
-                    role="status"
-                    aria-live="polite"
-                    aria-label="Checking subscription"
-                    className="min-h-screen flex items-center justify-center"
-                >
-                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" aria-hidden="true" />
-                    <span className="sr-only">Checking subscription access...</span>
-                </div>
-            )
-        }
-
-        if (!canUseFeature(requiredFeature)) {
-            return <PlanRestricted featureKey={requiredFeature} planName={entitlements?.plan?.name} />
-        }
-    }
-
-    return children
+  return children
 }
