@@ -9,12 +9,18 @@ if (!supabaseUrl || !supabaseKey) {
 }
 
 // Global fetch wrapper for Supabase JS client to provide automatic exponential backoff retries on network drops or server errors
-const customFetch = async (url, options) => {
+const customFetch = async (url, options = {}) => {
     const retries = 3
     const delayMs = 500
     for (let attempt = 0; attempt < retries; attempt++) {
         try {
-            const response = await fetch(url, options)
+            // Guard against indefinitely stalled TCP connections with an 8s timeout per attempt if caller did not provide a signal
+            let fetchOptions = options
+            if (!options.signal && typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
+                fetchOptions = { ...options, signal: AbortSignal.timeout(8000) }
+            }
+
+            const response = await fetch(url, fetchOptions)
             
             // Do not retry on client errors (4xx) except timeout (408) or rate limit (429)
             if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
@@ -32,7 +38,7 @@ const customFetch = async (url, options) => {
             
             return response
         } catch (err) {
-            // Network errors (like going offline)
+            // Network errors (like going offline or individual timeout)
             if (attempt === retries - 1) {
                 console.error(`[Supabase Fetch] Network error. All ${retries} retry attempts failed:`, err.message)
                 throw err

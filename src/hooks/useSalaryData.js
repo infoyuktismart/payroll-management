@@ -113,3 +113,88 @@ export const useDeleteCustomDeduction = () => {
         }
     })
 }
+
+export const useSalaryEmployees = () => {
+    return useQuery({
+        queryKey: ['salaryEmployees'],
+        queryFn: async () => {
+            try {
+                return await salaryService.getSalaryEmployees()
+            } catch (error) {
+                toast.error('Failed to load salary employees: ' + error.message)
+                throw error
+            }
+        }
+    })
+}
+
+export const useUpdateEmployeeSalaryStructure = () => {
+    const queryClient = useQueryClient()
+    return useMutation({
+        mutationFn: ({ employeeId, updates }) => salaryService.updateEmployeeSalaryStructure({ employeeId, updates }),
+        onSuccess: () => {
+            toast.success('Salary structure updated successfully!')
+            queryClient.invalidateQueries({ queryKey: ['salaryStructurePage'] })
+        },
+        onError: (error) => {
+            toast.error('Failed to update salary structure: ' + error.message)
+        }
+    })
+}
+
+export const useBulkSalaryRevision = () => {
+    const queryClient = useQueryClient()
+    return useMutation({
+        mutationFn: ({ componentName, componentCode, newValue, companyId }) =>
+            salaryService.bulkSalaryRevision({ componentName, componentCode, newValue, companyId }),
+        onSuccess: (data) => {
+            if (data?.success) {
+                const updated = data.updatedCount || 0
+                toast.success(`Salaries revised successfully! Updated: ${updated} employee(s).`)
+                
+                if (data.warnings && data.warnings.length > 0) {
+                    const warningNames = data.warnings.map(w => `${w.name} (${w.reason})`).join(', ')
+                    toast(`Skipped ${data.warnings.length} employee(s) due to flat adjustments constraint: ${warningNames}`, {
+                        icon: '⚠️',
+                        duration: 8000
+                    })
+                }
+            } else {
+                toast.error(data?.error || 'Bulk revision sync response was unsuccessful.')
+            }
+            queryClient.invalidateQueries({ queryKey: ['salaryStructurePage'] })
+            queryClient.invalidateQueries({ queryKey: ['salaryComponents'] })
+        },
+        onError: (error) => {
+            toast.error('Bulk revision failed: ' + error.message)
+        }
+    })
+}
+
+export const useSalaries = ({ employeeId, isAdmin } = {}) => {
+    return useQuery({
+        queryKey: ['salaries', { employeeId, isAdmin }],
+        queryFn: async () => {
+            try {
+                return await salaryService.getSalaries({ employeeId, isAdmin })
+            } catch (error) {
+                toast.error('Failed to load salaries list: ' + error.message)
+                throw error
+            }
+        }
+    })
+}
+
+export const useCreateSalaryPayment = () => {
+    const queryClient = useQueryClient()
+    return useMutation({
+        mutationFn: (payload) => salaryService.createSalaryPayment(payload),
+        onSuccess: () => {
+            toast.success('Salary payment processed successfully!')
+            queryClient.invalidateQueries({ queryKey: ['salaries'] })
+        },
+        onError: (error) => {
+            toast.error('Failed to process salary payment: ' + error.message)
+        }
+    })
+}

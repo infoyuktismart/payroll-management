@@ -1,20 +1,17 @@
-import { useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
+import { useState, useEffect, useMemo } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { format } from 'date-fns'
 import { Plus } from 'lucide-react'
 import Modal from '../components/ui/Modal'
 import { useToast } from '../context/ToastContext'
 import { logger } from '../lib/devLogger'
-import { applyCompanyFilter, withCompanyScope } from '../services/tenantScope'
+import { employeeService } from '../services/employeeService'
+import { useAllEmployees, useEmployeeByEmail } from '../hooks/useEmployees'
+import { useSalaries, useCreateSalaryPayment } from '../hooks/useSalaryData'
 
 export default function Salaries() {
     const { user, isAdmin } = useAuth()
     const toast = useToast()
-    const [salaries, setSalaries] = useState([])
-    const [employees, setEmployees] = useState([]) // List of employees for selection
-    const [employeeMap, setEmployeeMap] = useState({})
-    const [loading, setLoading] = useState(true)
     const [isModalOpen, setIsModalOpen] = useState(false)
     const [formData, setFormData] = useState({
         employee_id: '',
@@ -24,76 +21,27 @@ export default function Salaries() {
         deductions: '0',
         payment_date: ''
     })
-    const [currentEmployee, setCurrentEmployee] = useState(null)
 
-    useEffect(() => {
-        const loadInitialData = async () => {
-            if (!user) return
-            try {
-                setLoading(true)
-                // 1. Fetch current employee profile
-                const { data: emp, error: empErr } = await applyCompanyFilter(
-                    supabase
-                        .from('employees')
-                        .select('*')
-                )
-                    .eq('email', user.email)
-                    .single()
-                
-                if (empErr && empErr.code !== 'PGRST116') throw empErr
-                setCurrentEmployee(emp)
- 
-                // 2. Fetch employee list and salaries in parallel
-                const promises = []
- 
-                if (isAdmin) {
-                    promises.push(applyCompanyFilter(supabase.from('employees').select('id, first_name, last_name, basic_salary')))
-                } else {
-                    promises.push(Promise.resolve({ data: null }))
-                }
- 
-                let salariesQuery = applyCompanyFilter(supabase.from('salaries').select('*')).order('month', { ascending: false })
-                if (!isAdmin && emp) {
-                    salariesQuery = salariesQuery.eq('employee_id', emp.id)
-                }
-                promises.push(salariesQuery)
- 
-                const [empsRes, salariesRes] = await Promise.all(promises)
- 
-                if (isAdmin && empsRes.data) {
-                    setEmployees(empsRes.data)
-                    const map = {}
-                    empsRes.data.forEach(e => map[e.id] = `${e.first_name} ${e.last_name}`)
-                    setEmployeeMap(map)
-                }
- 
-                if (salariesRes.data) {
-                    setSalaries(salariesRes.data)
-                }
- 
-            } catch (error) {
-                logger.error("Error loading salaries data:", error)
-            } finally {
-                setLoading(false)
-            }
-        }
-        loadInitialData()
-    }, [user, isAdmin])
+    // Fetch employee profile using custom query hook (caches & prevents multiple DB fetches)
+    const { data: currentEmployee = null, isLoading: loadingEmployee } = useEmployeeByEmail(user?.email)
 
+    // Fetch salaries list using custom query hook
+    const { data: salaries = [], isLoading: salariesLoading } = useSalaries({
+        employeeId: currentEmployee?.id,
+        isAdmin
+    })
 
-    const fetchSalaries = async () => {
-        try {
-            let query = applyCompanyFilter(supabase.from('salaries').select('*')).order('month', { ascending: false })
-            if (!isAdmin && currentEmployee) {
-                query = query.eq('employee_id', currentEmployee.id)
-            }
-            const { data, error } = await query
-            if (error) throw error
-            setSalaries(data)
-        } catch (error) {
-            logger.error('Error fetching salaries:', error)
-        }
-    }
+    // Fetch employees list using custom query hook
+    const { data: employees = [], isLoading: employeesLoading } = useAllEmployees()
+
+    // Map employees list to map format for table rendering
+    const employeeMap = useMemo(() => {
+        const map = {}
+        employees.forEach(e => map[e.id] = `${e.first_name} ${e.last_name}`)
+        return map
+    }, [employees])
+
+    const createSalaryPaymentMutation = useCreateSalaryPayment()
 
     const handleEmployeeSelect = (e) => {
         const empId = e.target.value
@@ -108,11 +56,8 @@ export default function Salaries() {
     const handleCreate = async (e) => {
         e.preventDefault()
         try {
-            const { error } = await supabase.from('salaries').insert([withCompanyScope(formData)])
-
-            if (error) throw error
+            await createSalaryPaymentMutation.mutateAsync(formData)
             setIsModalOpen(false)
-            fetchSalaries()
             setFormData({
                 employee_id: '',
                 month: '',
@@ -122,9 +67,11 @@ export default function Salaries() {
                 payment_date: ''
             })
         } catch (error) {
-            toast.error(error.message)
+            // Error toast handled by custom hook mutation
         }
     }
+
+    const loading = loadingEmployee || salariesLoading || employeesLoading || createSalaryPaymentMutation.isPending
 
     return (
         <div className="space-y-6">

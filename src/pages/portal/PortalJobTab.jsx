@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react'
 import { FileText, AlertCircle, MapPin, User, X, ChevronDown, ChevronRight, GitCommit, Plus, Edit2, Trash2, ShieldAlert } from 'lucide-react'
 import { employeeService } from '../../services/employeeService'
-import { supabase } from '../../lib/supabase'
-import { withCompanyScope } from '../../services/tenantScope'
+import { usePortalNominees, usePortalOrgChart, useCreateNomineeMutation, useUpdateNomineeMutation, useDeleteNomineeMutation } from '../../hooks/usePortalData'
 
 export default function PortalJobTab({
     currentEmployee,
@@ -11,14 +10,19 @@ export default function PortalJobTab({
     toast
 }) {
     const [showCareerPathModal, setShowCareerPathModal] = useState(false)
-    const [employees, setEmployees] = useState([])
-    const [loadingOrg, setLoadingOrg] = useState(true)
     const [showPeers, setShowPeers] = useState(true)
     const [showReports, setShowReports] = useState(true)
 
+    // React Query Gold Standard split hooks
+    const { data: nominees = [], isLoading: loadingNominees } = usePortalNominees(currentEmployee?.id, true)
+    const { data: employees = [], isLoading: loadingOrg } = usePortalOrgChart(true)
+
+    // Nominee Mutations
+    const createNomineeMutation = useCreateNomineeMutation(currentEmployee?.id)
+    const updateNomineeMutation = useUpdateNomineeMutation(currentEmployee?.id)
+    const deleteNomineeMutation = useDeleteNomineeMutation(currentEmployee?.id)
+
     // Nominee States
-    const [nominees, setNominees] = useState([])
-    const [loadingNominees, setLoadingNominees] = useState(true)
     const [isNomineeModalOpen, setIsNomineeModalOpen] = useState(false)
     const [editingNominee, setEditingNominee] = useState(null)
     const [nomineeForm, setNomineeForm] = useState({
@@ -29,46 +33,14 @@ export default function PortalJobTab({
         aadhaar_number: ''
     })
     const [nomineeFormErrors, setNomineeFormErrors] = useState({})
-    const [savingNominee, setSavingNominee] = useState(false)
+    
+    const savingNominee = createNomineeMutation.isPending || updateNomineeMutation.isPending
 
     // Delete Nominee Modal States
     const [showNomineeDeleteModal, setShowNomineeDeleteModal] = useState(false)
     const [nomineeToDelete, setNomineeToDelete] = useState(null)
-    const [deletingNominee, setDeletingNominee] = useState(false)
-
-    const fetchNominees = async () => {
-        if (!currentEmployee?.id) return
-        setLoadingNominees(true)
-        try {
-            const { data, error } = await supabase
-                .from('employee_nominees')
-                .select('*')
-                .eq('employee_id', currentEmployee.id)
-                .order('created_at', { ascending: true })
-
-            if (error) throw error
-            setNominees(data || [])
-        } catch (err) {
-            console.error("Failed to load nominees:", err)
-        } finally {
-            setLoadingNominees(false)
-        }
-    }
-
-    useEffect(() => {
-        const loadOrg = async () => {
-            try {
-                const list = await employeeService.getAllEmployees()
-                setEmployees(list)
-            } catch (err) {
-                console.error("Failed to load org chart", err)
-            } finally {
-                setLoadingOrg(false)
-            }
-        }
-        loadOrg()
-        fetchNominees()
-    }, [currentEmployee?.id])
+    
+    const deletingNominee = deleteNomineeMutation.isPending
 
     const getFullName = (emp) => `${emp.first_name || ''} ${emp.last_name || ''}`.trim()
 
@@ -116,7 +88,7 @@ export default function PortalJobTab({
         setNomineeForm(prev => ({ ...prev, [name]: value }))
     }
 
-    const handleSaveNominee = async (e) => {
+    const handleSaveNominee = (e) => {
         e.preventDefault()
         const errors = {}
 
@@ -144,41 +116,27 @@ export default function PortalJobTab({
             return
         }
 
-        setSavingNominee(true)
-        try {
-            const payload = withCompanyScope({
-                employee_id: currentEmployee.id,
-                name: nomineeForm.name.trim(),
-                relationship: nomineeForm.relationship.trim(),
-                pf_share_percentage: sharePercentage,
-                date_of_birth: nomineeForm.date_of_birth,
-                aadhaar_number: nomineeForm.aadhaar_number.replace(/\s+/g, '').trim() || null
+        const payload = {
+            employee_id: currentEmployee.id,
+            name: nomineeForm.name.trim(),
+            relationship: nomineeForm.relationship.trim(),
+            pf_share_percentage: sharePercentage,
+            date_of_birth: nomineeForm.date_of_birth,
+            aadhaar_number: nomineeForm.aadhaar_number.replace(/\s+/g, '').trim() || null
+        }
+
+        if (editingNominee) {
+            updateNomineeMutation.mutate({ id: editingNominee.id, payload }, {
+                onSuccess: () => {
+                    setIsNomineeModalOpen(false)
+                }
             })
-
-            if (editingNominee) {
-                const { error } = await supabase
-                    .from('employee_nominees')
-                    .update(payload)
-                    .eq('id', editingNominee.id)
-
-                if (error) throw error
-                toast.success('Nominee updated successfully.')
-            } else {
-                const { error } = await supabase
-                    .from('employee_nominees')
-                    .insert([payload])
-
-                if (error) throw error
-                toast.success('PF Nominee added successfully.')
-            }
-
-            setIsNomineeModalOpen(false)
-            fetchNominees()
-        } catch (err) {
-            console.error("Nominee CRUD error:", err)
-            toast.error("Failed to save nominee: " + err.message)
-        } finally {
-            setSavingNominee(false)
+        } else {
+            createNomineeMutation.mutate(payload, {
+                onSuccess: () => {
+                    setIsNomineeModalOpen(false)
+                }
+            })
         }
     }
 
@@ -187,26 +145,14 @@ export default function PortalJobTab({
         setShowNomineeDeleteModal(true)
     }
 
-    const confirmDeleteNominee = async () => {
+    const confirmDeleteNominee = () => {
         if (!nomineeToDelete) return
-        setDeletingNominee(true)
-        try {
-            const { error } = await supabase
-                .from('employee_nominees')
-                .delete()
-                .eq('id', nomineeToDelete.id)
-
-            if (error) throw error
-            toast.success('Nominee removed successfully.')
-            setShowNomineeDeleteModal(false)
-            setNomineeToDelete(null)
-            fetchNominees()
-        } catch (err) {
-            console.error("Nominee delete error:", err)
-            toast.error("Failed to delete nominee: " + err.message)
-        } finally {
-            setDeletingNominee(false)
-        }
+        deleteNomineeMutation.mutate(nomineeToDelete.id, {
+            onSuccess: () => {
+                setShowNomineeDeleteModal(false)
+                setNomineeToDelete(null)
+            }
+        })
     }
 
     return (

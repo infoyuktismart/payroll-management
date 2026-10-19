@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { LogOut, CheckCircle, Clock3, X, AlertCircle, Check } from 'lucide-react'
-import { supabase } from '../../lib/supabase'
-import { applyCompanyFilter, withCompanyScope } from '../../services/tenantScope'
+import {
+    useInitiateResignationMutation,
+    useUpdateExitStatusMutation
+} from '../../hooks/usePortalData'
 
 const formatDateSafe = (value, options = { month: 'short', day: '2-digit', year: 'numeric' }, fallback = 'N/A') => {
     if (!value) return fallback
@@ -27,6 +29,9 @@ export default function PortalExitTab({
         interview_notes: ''
     })
 
+    const initiateResignationMutation = useInitiateResignationMutation(viewAsId)
+    const updateExitStatusMutation = useUpdateExitStatusMutation(viewAsId)
+
     const handleResign = async () => {
         if (!resignationData.last_working_day) {
             toast.warning('Please select your preferred last working day.')
@@ -34,22 +39,7 @@ export default function PortalExitTab({
         }
         try {
             setLoading(true)
-            const { error } = await supabase.from('exits').insert([withCompanyScope({
-                employee_id: viewAsId,
-                ...resignationData,
-                status: 'pending'
-            })])
-            if (error) throw error
-
-            const { data: exitData } = await applyCompanyFilter(
-                supabase
-                    .from('exits')
-                    .select('*')
-            )
-                .eq('employee_id', viewAsId)
-                .order('created_at', { ascending: false })
-                .limit(1)
-                .single()
+            const exitData = await initiateResignationMutation.mutateAsync(resignationData)
             setActiveExit(exitData)
             setShowResignModal(false)
             toast.success('Resignation submitted successfully. HR will review it soon.')
@@ -62,20 +52,8 @@ export default function PortalExitTab({
 
     const updateExitStatus = async (exitId, newStatus) => {
         try {
-            const { error } = await supabase
-                .from('exits')
-                .update({ status: newStatus })
-                .eq('id', exitId)
-            if (error) throw error
-
+            await updateExitStatusMutation.mutateAsync({ exitId, newStatus })
             setActiveExit(prev => ({ ...prev, status: newStatus }))
-
-            if (newStatus === 'completed' && viewAsId) {
-                await supabase
-                    .from('employees')
-                    .update({ status: 'resigned' })
-                    .eq('id', viewAsId)
-            }
             toast.success(`Exit process updated to ${newStatus}.`)
         } catch (error) {
             toast.error(error.message)

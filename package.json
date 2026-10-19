@@ -58,7 +58,8 @@
     "vite": "^7.2.4",
     "vite-plugin-compression2": "^2.5.3",
     "vite-plugin-pwa": "^1.2.0",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.7",
+    "typescript": "^5.7.3"
   },
   "lint-staged": {
     "*.{js,jsx}": [

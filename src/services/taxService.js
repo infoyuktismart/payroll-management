@@ -44,5 +44,25 @@ export const taxService = {
             if (error) throw error
             return true
         })
+    },
+
+    /**
+     * Get tax declarations for a specific employee.
+     * @param {any} employeeId - The employee ID
+     * @param {string} [financialYear] - The optional financial year
+     * @returns {Promise<any>} A promise that resolves with the result
+     */
+    async getEmployeeTaxDeclarations(employeeId, financialYear) {
+        return withRetry(async () => {
+            let query = supabase
+                .from('tax_declarations')
+                .select('*')
+                .eq('employee_id', employeeId)
+            if (financialYear) query = query.eq('financial_year', financialYear)
+            query = applyCompanyFilter(query)
+            const { data, error } = await query
+            if (error) throw error
+            return data || []
+        })
     }
 }

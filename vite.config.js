@@ -98,6 +98,7 @@ export default defineConfig({
           cleanupOutdatedCaches: true,
           navigateFallback: '/index.html',
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+          globIgnores: ['**/vendor-pdf*.js', '**/xlsx*.js', '**/vendor-charts*.js'],
           importScripts: ['/sw-push.js'],
           runtimeCaching: [
             {
@@ -105,7 +106,7 @@ export default defineConfig({
               handler: 'NetworkFirst',
               options: {
                 cacheName: 'payroll-pages',
-                networkTimeoutSeconds: 3,
+                networkTimeoutSeconds: 2,
                 expiration: {
                   maxEntries: 24,
                   maxAgeSeconds: 60 * 60 * 24 * 7,
@@ -115,10 +116,9 @@ export default defineConfig({
             {
               urlPattern: ({ request }) =>
                 ['script', 'style', 'worker'].includes(request.destination),
-              handler: 'NetworkFirst',
+              handler: 'StaleWhileRevalidate',
               options: {
                 cacheName: 'payroll-static-assets-v2',
-                networkTimeoutSeconds: 5,
                 expiration: {
                   maxEntries: 80,
                   maxAgeSeconds: 60 * 60 * 24,
@@ -133,21 +133,6 @@ export default defineConfig({
                 expiration: {
                   maxEntries: 80,
                   maxAgeSeconds: 60 * 60 * 24 * 30,
-                },
-              },
-            },
-            {
-              urlPattern: ({ url }) => url.hostname.endsWith('.supabase.co'),
-              handler: 'NetworkFirst',
-              options: {
-                cacheName: 'payroll-supabase-runtime',
-                networkTimeoutSeconds: 8,
-                expiration: {
-                  maxEntries: 80,
-                  maxAgeSeconds: 60 * 10,
-                },
-                cacheableResponse: {
-                  statuses: [0, 200],
                 },
               },
             },

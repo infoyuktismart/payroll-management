@@ -4,8 +4,10 @@ import { useToast } from '../context/ToastContext'
 import { logger } from '../lib/devLogger'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { usePlanEntitlements } from '../hooks/usePlanEntitlements'
-import { withCompanyScopeList } from '../services/tenantScope'
+import { withCompanyScopeList, applyCompanyFilter } from '../services/tenantScope'
 import { Upload, Download, AlertCircle, CheckCircle, RefreshCw, X, FileSpreadsheet, HelpCircle } from 'lucide-react'
+
+import { parseDateToISO } from '../lib/dateUtils'
 
 // CSV headers mapping
 const REQUIRED_FIELDS = ['first_name', 'email', 'salary', 'designation', 'department']
@@ -17,8 +19,8 @@ const FIELD_LABELS = {
     email: 'Email Address*',
     phone: 'Phone Number',
     gender: 'Gender (Male/Female/Other)',
-    dob: 'Date of Birth (YYYY-MM-DD)',
-    joining_date: 'Joining Date (YYYY-MM-DD)',
+    dob: 'Date of Birth (DD-MM-YYYY)',
+    joining_date: 'Joining Date (DD-MM-YYYY)',
     designation: 'Designation*',
     department: 'Department*',
     reporting_person: 'Reporting Person',
@@ -36,7 +38,7 @@ const FIELD_LABELS = {
     permanent_address: 'Permanent Address'
 }
 
-export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
+export default function BulkImportModal({ isOpen, onClose, onImportSuccess, onSuccess }) {
     const trapRef = useFocusTrap(isOpen)
     const { entitlements, canAddUsage } = usePlanEntitlements()
 
@@ -52,6 +54,7 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
     const fileInputRef = useRef(null)
     const [step, setStep] = useState(1) // 1: Upload, 2: Preview & Validate, 3: Importing, 4: Done
     const [dragActive, setDragActive] = useState(false)
+    const [showFieldGuide, setShowFieldGuide] = useState(false)
     
     // Data states
     const [parsedData, setParsedData] = useState([])
@@ -61,21 +64,40 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
 
     if (!isOpen) return null
 
-    // Download Sample CSV template
-    const downloadTemplate = () => {
+    // Download Sample CSV or Excel template
+    const downloadTemplate = (format = 'csv') => {
         const headers = Object.keys(FIELD_LABELS)
         const sampleRow1 = [
-            'EMP099', 'Aarav', 'Sharma', 'aarav.sharma@example.com', '9876543210', 'Male', '1990-05-15', '2025-01-01',
+            '', 'Aarav', 'Sharma', 'aarav.sharma@example.com', '9876543210', 'Male', '15-05-1990', '01-01-2025',
             'Software Engineer', 'Engineering', 'Vikram Malhotra', '65000', 'ABCDE1234F', '123456789012',
             'HDFC Bank', '501002345678', 'HDFC0001234', '100123456789', '3112345678', 'Permanent', 'Single',
             '123, MG Road, Bangalore', '123, MG Road, Bangalore'
         ]
         const sampleRow2 = [
-            '', 'Priya', 'Patel', 'priya.patel@example.com', '9988776655', 'Female', '1994-08-20', '2025-03-10',
+            '', 'Priya', 'Patel', 'priya.patel@example.com', '9988776655', 'Female', '20-08-1994', '10-03-2025',
             'HR Executive', 'HR', 'Neha Gupta', '45000', 'FGHIJ5678K', '987654321098',
             'ICICI Bank', '000401234567', 'ICIC0000004', '100987654321', '3198765432', 'Contract', 'Married',
             '456, Linking Road, Mumbai', '456, Linking Road, Mumbai'
         ]
+
+        if (format === 'excel' || format === 'xlsx') {
+            import('xlsx').then((XLSX) => {
+                const data = [
+                    headers,
+                    sampleRow1,
+                    sampleRow2
+                ]
+                const ws = XLSX.utils.aoa_to_sheet(data)
+                const wb = XLSX.utils.book_new()
+                XLSX.utils.book_append_sheet(wb, ws, 'Employee Template')
+                XLSX.writeFile(wb, 'employee_import_template.xlsx')
+                toast.success('Excel Template (.xlsx) downloaded successfully.')
+            }).catch((err) => {
+                logger.error('Failed to generate Excel file:', err)
+                toast.error('Failed to export Excel file.')
+            })
+            return
+        }
 
         const csvContent = [
             headers.join(','),
@@ -92,7 +114,7 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
         document.body.appendChild(link)
         link.click()
         document.body.removeChild(link)
-        toast.success('Template CSV downloaded successfully.')
+        toast.success('CSV Template downloaded successfully.')
     }
 
     // Handle CSV / Excel File upload and validate using dynamic xlsx import
@@ -110,7 +132,7 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
         try {
             const XLSX = await import('xlsx')
             const buffer = await file.arrayBuffer()
-            const wb = XLSX.read(buffer, { type: 'buffer' })
+            const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true })
             const ws = wb.Sheets[wb.SheetNames[0]]
             const parsedRows = XLSX.utils.sheet_to_json(ws, { header: 1 })
 
@@ -179,11 +201,17 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
         if (row.phone && !/^\+?[0-9\s-]{10,15}$/.test(row.phone)) {
             errors.phone = 'Invalid phone format (10-15 digits).'
         }
-        if (row.dob && isNaN(Date.parse(row.dob))) {
-            errors.dob = 'DOB must be in YYYY-MM-DD format.'
+        if (row.dob) {
+            const parsed = parseDateToISO(row.dob)
+            if (!parsed.isValid) {
+                errors.dob = 'DOB must be in DD-MM-YYYY format.'
+            }
         }
-        if (row.joining_date && isNaN(Date.parse(row.joining_date))) {
-            errors.joining_date = 'Joining Date must be YYYY-MM-DD.'
+        if (row.joining_date) {
+            const parsed = parseDateToISO(row.joining_date)
+            if (!parsed.isValid) {
+                errors.joining_date = 'Joining Date must be in DD-MM-YYYY format.'
+            }
         }
         if (row.pan_number && !/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/i.test(row.pan_number)) {
             errors.pan_number = 'Invalid Indian PAN format (e.g. ABCDE1234F).'
@@ -235,6 +263,27 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
         setStep(3)
         setImportProgress(0)
 
+        // Pre-fetch highest existing serial number for company to auto-generate missing Employee IDs
+        let autoSerial = 1
+        try {
+            let query = supabase
+                .from('employees')
+                .select('employee_id')
+                .ilike('employee_id', 'EMP%')
+            query = applyCompanyFilter(query)
+            const { data: existingEmps } = await query
+            if (existingEmps?.length > 0) {
+                const serials = existingEmps
+                    .map(emp => parseInt(emp.employee_id?.replace(/^EMP/i, ''), 10))
+                    .filter(val => !isNaN(val))
+                if (serials.length > 0) {
+                    autoSerial = Math.max(...serials) + 1
+                }
+            }
+        } catch (err) {
+            logger.warn('Failed to fetch existing employee serials:', err)
+        }
+
         let successCount = 0
         let failedCount = 0
         const batchSize = 10
@@ -242,33 +291,44 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
         for (let i = 0; i < validRows.length; i += batchSize) {
             const batch = validRows.slice(i, i + batchSize).map(r => {
                 const data = r.data
-                return {
-                    employee_id: data.employee_id || undefined, // database default serial
+                let generatedId = data.employee_id
+                if (!generatedId) {
+                    generatedId = `EMP${autoSerial.toString().padStart(3, '0')}`
+                    autoSerial++
+                }
+                const parsedDob = parseDateToISO(data.dob)
+                const parsedJoining = parseDateToISO(data.joining_date)
+
+                const empObj = {
+                    employee_id: generatedId,
                     first_name: data.first_name,
                     last_name: data.last_name || '',
                     email: data.email,
                     phone: data.phone || null,
                     gender: data.gender || 'Male',
-                    dob: data.dob || null,
-                    joining_date: data.joining_date || new Date().toISOString().split('T')[0],
+                    joining_date: parsedJoining.isoDate || new Date().toISOString().split('T')[0],
                     designation: data.designation,
                     department: data.department,
                     reporting_person: data.reporting_person || null,
                     salary: Number(data.salary),
                     salary_allowances: 0, // default standard configuration
-                    pan_number: data.pan_number || null,
-                    aadhaar_number: data.aadhaar_number || null,
-                    bank_name: data.bank_name || null,
-                    bank_account_number: data.bank_account_number || null,
-                    ifsc_code: data.ifsc_code || null,
-                    uan_number: data.uan_number || null,
-                    esi_number: data.esi_number || null,
                     contract_type: data.contract_type || 'Permanent',
                     marital_status: data.marital_status || 'Single',
                     current_address: data.current_address || '',
                     permanent_address: data.permanent_address || '',
                     status: 'active'
                 }
+
+                if (parsedDob.isoDate) empObj.dob = parsedDob.isoDate
+                if (data.pan_number && data.pan_number.trim() !== '') empObj.pan_number = data.pan_number.trim()
+                if (data.aadhaar_number && data.aadhaar_number.trim() !== '') empObj.aadhaar_number = data.aadhaar_number.trim()
+                if (data.bank_name && data.bank_name.trim() !== '') empObj.bank_name = data.bank_name.trim()
+                if (data.bank_account_number && data.bank_account_number.trim() !== '') empObj.bank_account_number = data.bank_account_number.trim()
+                if (data.ifsc_code && data.ifsc_code.trim() !== '') empObj.ifsc_code = data.ifsc_code.trim()
+                if (data.uan_number && data.uan_number.trim() !== '') empObj.uan_number = data.uan_number.trim()
+                if (data.esi_number && data.esi_number.trim() !== '') empObj.esi_number = data.esi_number.trim()
+
+                return empObj
             })
 
             try {
@@ -278,6 +338,7 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
             } catch (err) {
                 logger.error('Import batch error:', err)
                 failedCount += batch.length
+                toast.error(`Import failed: ${err.message || 'Database insert error'}`)
             }
 
             const currentPercent = Math.round(((i + batch.length) / validRows.length) * 100)
@@ -286,7 +347,7 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
         }
 
         setStep(4)
-        if (onImportSuccess) onImportSuccess()
+        if (successCount > 0 && onImportSuccess) onImportSuccess()
     }
 
     const resetState = () => {
@@ -318,16 +379,78 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
                 <div className="flex-1 overflow-y-auto p-6">
                     {step === 1 && (
                         <div className="space-y-6">
+                            {/* Prominent Template Download Section */}
+                            <div className="bg-linear-to-r from-emerald-50 to-teal-50 border border-emerald-200 rounded-2xl p-5 space-y-4 shadow-sm">
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                                    <div className="flex items-center gap-3.5">
+                                        <div className="w-12 h-12 rounded-2xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-md shadow-emerald-200">
+                                            <FileSpreadsheet className="w-6 h-6" />
+                                        </div>
+                                        <div>
+                                            <div className="flex items-center gap-2">
+                                                <h4 className="text-base font-bold text-gray-900">Download Ready-to-Use Sample Templates</h4>
+                                                <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-black uppercase rounded-md tracking-wider">Recommended</span>
+                                            </div>
+                                            <p className="text-xs text-gray-600 mt-0.5">Pre-populated with required headers, sample employee data, and standard columns</p>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-2.5 shrink-0">
+                                        <button
+                                            type="button"
+                                            onClick={() => downloadTemplate('csv')}
+                                            className="px-4 py-2.5 bg-white border border-gray-300 hover:border-emerald-600 text-slate-800 hover:text-emerald-700 font-bold text-xs rounded-xl hover:bg-emerald-50/50 transition-all flex items-center gap-2 shadow-sm cursor-pointer"
+                                        >
+                                            <Download className="w-4 h-4 text-emerald-600" />
+                                            <span>Sample CSV</span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => downloadTemplate('excel')}
+                                            className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-all flex items-center gap-2 shadow-md shadow-emerald-200 cursor-pointer"
+                                        >
+                                            <Download className="w-4 h-4" />
+                                            <span>Sample Excel (.xlsx)</span>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Column Legend Accordion */}
+                                <div className="border-t border-emerald-200/60 pt-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowFieldGuide(!showFieldGuide)}
+                                        className="text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1.5 cursor-pointer"
+                                    >
+                                        <HelpCircle className="w-4 h-4 text-indigo-500" />
+                                        <span>{showFieldGuide ? 'Hide Supported Column Legend' : 'View Supported Columns & Data Format Rules'}</span>
+                                    </button>
+
+                                    {showFieldGuide && (
+                                        <div className="mt-3 bg-white p-4 rounded-xl border border-gray-200 text-xs space-y-3 animate-in fade-in">
+                                            <h5 className="font-bold text-slate-800">Supported Column Headers (* Required)</h5>
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                                                {Object.entries(FIELD_LABELS).map(([key, label]) => (
+                                                    <div key={key} className="flex items-start gap-1.5 bg-slate-50 p-2 rounded-lg border border-slate-100">
+                                                        <code className="font-bold text-indigo-600 shrink-0">{key}</code>
+                                                        <span className="text-slate-600">{label}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
                             {/* Alert/Info */}
                             <div className="flex items-start gap-3 p-4 bg-blue-50 border border-blue-100 text-blue-800 rounded-2xl">
                                 <HelpCircle className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
                                 <div>
                                     <h4 className="text-sm font-bold">Import Guidelines</h4>
                                     <ul className="text-xs space-y-1 mt-1 text-blue-700/90 list-disc pl-4">
-                                        <li>File must be in <strong>CSV (Comma Separated Values)</strong> format.</li>
-                                        <li>Required fields are First Name, Email, Salary, Designation, and Department.</li>
-                                        <li>Date format must be strictly <strong>YYYY-MM-DD</strong>.</li>
-                                        <li>Indian tax identifiers (PAN, Aadhaar) will be encrypted automatically.</li>
+                                        <li>File must be in <strong>CSV or Excel (.xlsx)</strong> format.</li>
+                                        <li>Required fields: <code>first_name</code>, <code>email</code>, <code>salary</code>, <code>designation</code>, <code>department</code>.</li>
+                                        <li>Date format must be strictly <strong>DD-MM-YYYY</strong> (e.g. 15-05-1990).</li>
+                                        <li>Indian tax identifiers (PAN, Aadhaar) are encrypted automatically.</li>
                                     </ul>
                                 </div>
                             </div>
@@ -364,26 +487,7 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
                                 <p className="text-xs text-gray-600 mt-1">
                                     {xlsxLoading ? 'Extracting spreadsheet worksheets' : 'or click to browse from files'}
                                 </p>
-                                <p className="text-[10px] text-gray-300 mt-4">CSV and Excel files up to 5MB supported</p>
-                            </div>
-
-                            {/* Template Download */}
-                            <div className="flex justify-between items-center bg-gray-50 border border-gray-100 rounded-2xl p-5">
-                                <div className="flex items-center gap-3">
-                                    <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                                        <FileSpreadsheet className="w-5 h-5" />
-                                    </div>
-                                    <div>
-                                        <h4 className="text-sm font-bold text-gray-800">Need a Sample Template?</h4>
-                                        <p className="text-xs text-gray-500">Download our formatted CSV template with correct headers</p>
-                                    </div>
-                                </div>
-                                <button
-                                    onClick={downloadTemplate}
-                                    className="px-4 py-2 border border-gray-200 hover:border-emerald-500 text-gray-700 hover:text-emerald-700 font-bold text-xs rounded-xl hover:bg-emerald-50/20 transition-all flex items-center gap-2"
-                                >
-                                    <Download className="w-4 h-4" /> Download Template
-                                </button>
+                                <p className="text-[10px] text-gray-400 mt-4">CSV and Excel (.xlsx) files up to 5MB supported</p>
                             </div>
                         </div>
                     )}
@@ -408,7 +512,7 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
 
                             {/* Data Preview Table */}
                             <div className="border border-gray-100 rounded-2xl overflow-hidden shadow-sm">
-                                <div className="max-h-[300px] overflow-y-auto">
+                                <div className="max-h-75 overflow-y-auto">
                                     <table className="w-full text-left border-collapse text-xs">
                                         <thead className="bg-slate-900 text-white font-bold sticky top-0 z-10">
                                             <tr>
@@ -487,12 +591,27 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
 
                     {step === 4 && (
                         <div className="flex flex-col items-center justify-center py-8 text-center space-y-6">
-                            <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center animate-bounce">
-                                <CheckCircle className="w-10 h-10" />
-                            </div>
+                            {importStats.success > 0 ? (
+                                <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center animate-bounce">
+                                    <CheckCircle className="w-10 h-10" />
+                                </div>
+                            ) : (
+                                <div className="w-16 h-16 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center">
+                                    <AlertCircle className="w-10 h-10" />
+                                </div>
+                            )}
+
                             <div>
-                                <h3 className="text-xl font-bold text-gray-900">Import Completed Successfully!</h3>
-                                <p className="text-xs text-gray-500 mt-1">The batch import process has successfully concluded.</p>
+                                <h3 className="text-xl font-bold text-gray-900">
+                                    {importStats.success > 0
+                                        ? (importStats.failed + errorCount > 0 ? 'Import Completed with Warnings' : 'Import Completed Successfully!')
+                                        : 'Import Failed'}
+                                </h3>
+                                <p className="text-xs text-gray-500 mt-1">
+                                    {importStats.success > 0
+                                        ? `Successfully imported ${importStats.success} employee profile(s).`
+                                        : 'No employee records could be imported due to database or validation errors.'}
+                                </p>
                             </div>
                             
                             <div className="flex items-center gap-6 border border-gray-100 rounded-3xl p-6 bg-slate-50/50 min-w-[320px] justify-around">
@@ -503,16 +622,28 @@ export default function BulkImportModal({ isOpen, onClose, onImportSuccess }) {
                                 <div className="w-px h-10 bg-gray-200"></div>
                                 <div>
                                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Failed/Skipped</p>
-                                    <p className="text-3xl font-black text-slate-400 mt-1">{importStats.failed + errorCount}</p>
+                                    <p className={`text-3xl font-black mt-1 ${importStats.failed + errorCount > 0 ? 'text-rose-500' : 'text-slate-400'}`}>
+                                        {importStats.failed + errorCount}
+                                    </p>
                                 </div>
                             </div>
 
-                            <button
-                                onClick={onClose}
-                                className="px-6 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-colors shadow-lg"
-                            >
-                                Done & Close
-                            </button>
+                            <div className="flex items-center gap-3">
+                                {importStats.success === 0 && (
+                                    <button
+                                        onClick={resetState}
+                                        className="px-6 py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 transition-colors shadow-lg"
+                                    >
+                                        Try Again
+                                    </button>
+                                )}
+                                <button
+                                    onClick={onClose}
+                                    className="px-6 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-colors shadow-lg"
+                                >
+                                    Done & Close
+                                </button>
+                            </div>
                         </div>
                     )}
                 </div>

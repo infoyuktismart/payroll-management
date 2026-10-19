@@ -61,7 +61,7 @@ export default function BranchSwitcher() {
                             type="button"
                             onClick={() => {
                                 setSelectedBranch(null)
-                                queryClient.invalidateQueries()
+                                queryClient.invalidateQueries({ queryKey: ['salaryStructurePage'] })
                                 setOpen(false)
                             }}
                             className={`w-full rounded-xl px-3 py-2 text-left transition flex items-center gap-3 ${!selectedBranch ? 'bg-blue-50 text-blue-700' : 'hover:bg-slate-50 text-slate-700'}`}
@@ -85,7 +85,7 @@ export default function BranchSwitcher() {
                                     type="button"
                                     onClick={() => {
                                         setSelectedBranch(item.id)
-                                        queryClient.invalidateQueries()
+                                        queryClient.invalidateQueries({ queryKey: ['salaryStructurePage'] })
                                         setOpen(false)
                                     }}
                                     className={`w-full rounded-xl px-3 py-2 text-left transition flex items-center gap-3 mt-1 ${selected ? 'bg-blue-50 text-blue-700' : 'hover:bg-slate-50 text-slate-700'}`}

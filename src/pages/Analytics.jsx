@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import {
     Area,
     AreaChart,
@@ -17,39 +18,43 @@ import { Activity, ShieldCheck, TrendingUp, Users } from 'lucide-react'
 import { analyticsService } from '../services/analyticsService'
 import { formatCurrency } from '../lib/payrollUtils'
 import { useToast } from '../context/ToastContext'
+import { useCompany } from '../context/CompanyContext'
 
 const COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#64748b']
 
+const DEFAULT_ANALYTICS_DATA = {
+    payrollTrend: [],
+    departmentHeadcount: [],
+    headcountMonthly: [],
+    attendanceSummary: [],
+    complianceSummary: {},
+    momVariance: { percentage: 0, amount: 0, direction: 'neutral' }
+}
+
 export default function Analytics() {
     const toast = useToast()
-    const [loading, setLoading] = useState(true)
+    const { activeCompanyId, selectedBranch } = useCompany()
     const [startDate, setStartDate] = useState('')
     const [endDate, setEndDate] = useState('')
-    const [data, setData] = useState({
-        payrollTrend: [],
-        departmentHeadcount: [],
-        headcountMonthly: [],
-        attendanceSummary: [],
-        complianceSummary: {},
-        momVariance: { percentage: 0, amount: 0, direction: 'neutral' }
-    })
 
-    useEffect(() => {
-        let mounted = true
-        const load = async () => {
-            setLoading(true)
+    const analyticsQuery = useQuery({
+        queryKey: ['analyticsData', startDate, endDate, activeCompanyId || 'all-companies', selectedBranch || 'all-branches'],
+        queryFn: async () => {
             try {
-                const analytics = await analyticsService.getAnalyticsDashboard(startDate, endDate)
-                if (mounted) setData(analytics)
+                return await analyticsService.getAnalyticsDashboard(startDate, endDate, activeCompanyId)
             } catch (error) {
                 toast.error(error.message || 'Unable to load analytics.')
-            } finally {
-                if (mounted) setLoading(false)
+                throw error
             }
-        }
-        load()
-        return () => { mounted = false }
-    }, [toast, startDate, endDate])
+        },
+        staleTime: 5 * 60 * 1000,
+        gcTime: 30 * 60 * 1000,
+        refetchOnWindowFocus: false,
+        keepPreviousData: true
+    })
+
+    const data = analyticsQuery.data || DEFAULT_ANALYTICS_DATA
+    const loading = analyticsQuery.isLoading
 
     const totals = useMemo(() => {
         const payrollTotal = data.payrollTrend.reduce((sum, row) => sum + Number(row.total_payroll || 0), 0)

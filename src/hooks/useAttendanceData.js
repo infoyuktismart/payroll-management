@@ -164,3 +164,66 @@ export const useUpdateOvertimeStatus = () => {
         }
     })
 }
+
+export const useAttendancePolicies = () => {
+    return useQuery({
+        queryKey: ['attendancePolicies'],
+        queryFn: async () => {
+            try {
+                return await attendanceService.getAttendancePolicies()
+            } catch (error) {
+                toast.error('Failed to load attendance policies: ' + error.message)
+                throw error
+            }
+        }
+    })
+}
+
+export const useCreateAttendancePolicy = () => {
+    const queryClient = useQueryClient()
+    return useMutation({
+        mutationFn: (payload) => attendanceService.createAttendancePolicy(payload),
+        onSuccess: () => {
+            toast.success('Attendance policy created successfully!')
+            queryClient.invalidateQueries({ queryKey: ['attendancePolicies'] })
+        },
+        onError: (error) => {
+            toast.error('Failed to create attendance policy: ' + error.message)
+        }
+    })
+}
+
+export const useAttendanceStats = ({ dateFilter, holidays }) => {
+    return useQuery({
+        queryKey: ['attendanceStats', dateFilter, holidays],
+        queryFn: async () => {
+            try {
+                return await attendanceService.getAttendanceStats({ dateFilter, holidays })
+            } catch (error) {
+                toast.error('Failed to load attendance stats: ' + error.message)
+                throw error
+            }
+        },
+        enabled: !!dateFilter
+    })
+}
+
+export const useBulkUploadAttendance = () => {
+    const queryClient = useQueryClient()
+    return useMutation({
+        mutationFn: ({ data, activeCompanyId }) => attendanceService.bulkUploadAttendance({ data, activeCompanyId }),
+        onSuccess: (res) => {
+            if (res.stats.success > 0 && res.stats.failed === 0) {
+                toast.success(`Successfully uploaded ${res.stats.success} attendance records!`)
+            } else if (res.stats.failed > 0) {
+                toast.error(`Uploaded ${res.stats.success} records. Failed ${res.stats.failed} records. Please check the report.`)
+            }
+            queryClient.invalidateQueries({ queryKey: ['dailyAttendance'] })
+            queryClient.invalidateQueries({ queryKey: ['calendarAttendance'] })
+            queryClient.invalidateQueries({ queryKey: ['attendanceStats'] })
+        },
+        onError: (error) => {
+            toast.error('Bulk upload failed: ' + error.message)
+        }
+    })
+}

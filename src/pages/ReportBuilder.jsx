@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import jsPDF from 'jspdf'
+
 import { Download, FileSpreadsheet, Save } from 'lucide-react'
 import { analyticsService } from '../services/analyticsService'
 import { downloadBlob } from '../lib/payrollUtils'
@@ -81,7 +81,8 @@ export default function ReportBuilder() {
             XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Report')
             XLSX.writeFile(wb, `${title}.xlsx`)
         } else if (form.format === 'PDF') {
-            const pdf = new jsPDF({ orientation: form.fields.length > 6 ? 'landscape' : 'portrait' })
+            const { default: jsPDFLib } = await import('jspdf')
+            const pdf = new jsPDFLib({ orientation: form.fields.length > 6 ? 'landscape' : 'portrait' })
             pdf.setFontSize(16)
             pdf.text(title.replace(/_/g, ' '), 14, 18)
             pdf.setFontSize(8)

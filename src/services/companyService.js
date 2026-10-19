@@ -52,5 +52,32 @@ export const companyService = {
             if (res.error) throw res.error
             return res.data
         })
+    },
+
+    /**
+     * Upload company logo to storage.
+     * @param {Object} params
+     * @param {File} params.file
+     * @returns {Promise<string>} Public URL of the uploaded image
+     */
+    async uploadLogo({ file }) {
+        return withRetry(async () => {
+            const fileExt = file.name.split('.').pop()
+            const fileName = `logo-${Date.now()}.${fileExt}`
+            const filePath = `public/${fileName}`
+
+            const { error: uploadError } = await supabase.storage
+                .from('company-assets')
+                .upload(filePath, file)
+
+            if (uploadError) throw uploadError
+
+            const { data: { publicUrl } } = supabase.storage
+                .from('company-assets')
+                .getPublicUrl(filePath)
+
+            return publicUrl
+        })
     }
 }
+

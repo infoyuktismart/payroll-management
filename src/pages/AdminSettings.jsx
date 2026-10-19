@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { CalendarDays, Plus, Trash2, Users, ClipboardList, History, Shield, Monitor, Smartphone, Globe, LogOut, RefreshCw, Activity, Crown, FileSearch } from 'lucide-react'
+import { CalendarDays, Plus, Trash2, Users, ClipboardList, History, Shield, Monitor, Smartphone, Globe, LogOut, RefreshCw, Activity, Crown, FileSearch, AlertTriangle } from 'lucide-react'
 import { supabase } from '../lib/supabase'
-import { useToast } from '../context/ToastContext'
 import {
     useAdminSettings,
     useAddDepartment,
@@ -15,6 +14,7 @@ import { logger } from '../lib/devLogger'
 import { getPublicIpAddress } from '../lib/networkInfo'
 import SecuritySettings from './SecuritySettings'
 import { usePlanEntitlements } from '../hooks/usePlanEntitlements'
+import { CardSkeleton, TableSkeleton } from '../components/ui/SkeletonLoader'
 
 const Panel = ({ title, icon: Icon, children, accentColor = 'text-slate-500' }) => (
     <section className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
@@ -48,8 +48,64 @@ const getBrowserInfo = () => {
     return { browser, os, deviceType }
 }
 
+const getReadableRecordLabel = (log) => {
+    if (!log) return '-'
+    const data = log.new_data || log.old_data || {}
+    const table = log.table_name
+    
+    switch (table) {
+        case 'employees':
+            if (data.first_name || data.last_name) {
+                return `${data.first_name || ''} ${data.last_name || ''}`.trim() + (data.employee_id ? ` (${data.employee_id})` : '')
+            }
+            break
+        case 'departments':
+        case 'holidays':
+            if (data.name) return data.name
+            break
+        case 'leave_policies':
+        case 'leaves':
+            if (data.leave_type) return data.leave_type
+            break
+        case 'onboarding_checklists':
+            if (data.task_name) return data.task_name
+            break
+        case 'custom_deductions':
+            if (data.deduction_type) return `${data.deduction_type} (₹${data.amount || 0})`
+            break
+        case 'payroll_runs':
+            if (data.month_year) return new Date(data.month_year).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
+            break
+        case 'payroll_items':
+            if (data.employee_id) return `Payroll Item (${data.net_salary ? '₹' + data.net_salary : log.record_id})`
+            break
+        case 'attendance':
+        case 'overtime':
+            if (data.date) return new Date(data.date).toLocaleDateString()
+            break
+        case 'salaries':
+            if (data.month) return `Salary - ${new Date(data.month).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}`
+            break
+        case 'salary_components':
+            if (data.name) return data.name
+            break
+        case 'leave_balances':
+            if (data.leave_type) return `${data.leave_type} Balance: ${data.balance || 0}`
+            break
+        case 'employee_documents':
+            if (data.document_type) return data.document_type
+            break
+        case 'exits':
+            if (data.exit_date) return `Exit Date: ${data.exit_date}`
+            break
+        case 'generated_reports':
+            if (data.title) return data.title
+            break
+    }
+    return log.record_id || '-'
+}
+
 export default function AdminSettings() {
-    const toast = useToast()
     const [currentUser, setCurrentUser] = useState(null)
     const [currentSession, setCurrentSession] = useState(null)
     const [userIp, setUserIp] = useState('Detecting...')
@@ -63,11 +119,13 @@ export default function AdminSettings() {
         leaveType: '',
         annualBalance: ''
     })
+    const [actorMap, setActorMap] = useState({})
 
-    // React Query hooks
-    const { data: adminData = {} } = useAdminSettings()
+    // React Query Gold Standard Query Hook
+    const { data: adminData = {}, isLoading, error } = useAdminSettings()
     const { departments = [], holidays = [], leavePolicies = [], auditLogs = [], notificationLogs = [] } = adminData
 
+    // React Query Gold Standard Mutation Hooks
     const addDepartmentMutation = useAddDepartment()
     const addHolidayMutation = useAddHoliday()
     const addLeavePolicyMutation = useAddLeavePolicy()
@@ -94,15 +152,52 @@ export default function AdminSettings() {
         detectIp()
     }, [])
 
+    useEffect(() => {
+        const fetchActors = async () => {
+            const uniqueActorIds = [...new Set(auditLogs.map(log => log.actor_id).filter(Boolean))]
+            if (uniqueActorIds.length === 0) return
+
+            try {
+                const [profilesRes, employeesRes] = await Promise.all([
+                    supabase.from('profiles').select('id, email, full_name').in('id', uniqueActorIds),
+                    supabase.from('employees').select('user_id, first_name, last_name, email').in('user_id', uniqueActorIds)
+                ])
+
+                const newMap = {}
+                uniqueActorIds.forEach(id => {
+                    const profile = profilesRes.data?.find(p => p.id === id)
+                    const employee = employeesRes.data?.find(e => e.user_id === id)
+
+                    const name = employee 
+                        ? `${employee.first_name || ''} ${employee.last_name || ''}`.trim()
+                        : profile?.full_name || ''
+
+                    const email = employee?.email || profile?.email || ''
+
+                    newMap[id] = {
+                        name: name || email || 'Unknown User',
+                        email: email
+                    }
+                })
+                setActorMap(prev => ({ ...prev, ...newMap }))
+            } catch (err) {
+                console.error('Failed to fetch actor names:', err)
+            }
+        }
+
+        if (auditLogs && auditLogs.length > 0) {
+            fetchActors()
+        }
+    }, [auditLogs])
+
+    // Pristine Handlers: Mutate state & delegate user notifications entirely to hooks
     const addDepartment = () => {
         const name = forms.department.trim()
         if (!name) return
         addDepartmentMutation.mutate(name, {
             onSuccess: () => {
                 setForms(prev => ({ ...prev, department: '' }))
-                toast.success('Department added.')
-            },
-            onError: (err) => toast.error(err.message || 'Failed to add department.')
+            }
         })
     }
 
@@ -111,9 +206,7 @@ export default function AdminSettings() {
         addHolidayMutation.mutate({ name: forms.holidayName.trim(), date: forms.holidayDate }, {
             onSuccess: () => {
                 setForms(prev => ({ ...prev, holidayName: '', holidayDate: '' }))
-                toast.success('Holiday added.')
-            },
-            onError: (err) => toast.error(err.message || 'Failed to add holiday.')
+            }
         })
     }
 
@@ -122,24 +215,16 @@ export default function AdminSettings() {
         addLeavePolicyMutation.mutate({ leaveType: forms.leaveType.trim(), annualBalance: forms.annualBalance }, {
             onSuccess: () => {
                 setForms(prev => ({ ...prev, leaveType: '', annualBalance: '' }))
-                toast.success('Leave policy added.')
-            },
-            onError: (err) => toast.error(err.message || 'Failed to add leave policy.')
+            }
         })
     }
 
     const removeRow = (table, id) => {
-        removeRowMutation.mutate({ table, id }, {
-            onSuccess: () => toast.success('Deleted successfully.'),
-            onError: (err) => toast.error(err.message || 'Failed to delete.')
-        })
+        removeRowMutation.mutate({ table, id })
     }
 
     const initializeLeaveBalances = () => {
-        initializeLeaveBalancesMutation.mutate(new Date().getFullYear(), {
-            onSuccess: () => toast.success('Leave balances initialized for active employees.'),
-            onError: (err) => toast.error(err.message || 'Failed to initialize leave balances.')
-        })
+        initializeLeaveBalancesMutation.mutate(new Date().getFullYear())
     }
 
     const handleSignOutAllDevices = async () => {
@@ -147,13 +232,66 @@ export default function AdminSettings() {
         try {
             const { error } = await supabase.auth.signOut({ scope: 'global' })
             if (error) throw error
-            toast.success('Signed out of all devices successfully.')
             setTimeout(() => window.location.href = '/login', 1500)
         } catch (err) {
-            toast.error('Failed to sign out: ' + err.message)
+            logger.error('Failed to sign out all devices:', err)
         } finally {
             setSigningOut(false)
         }
+    }
+
+    // ─── Render Loading Skeletons ───
+    if (isLoading) {
+        return (
+            <div className="space-y-6 animate-pulse">
+                <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+                    <div className="h-4 bg-gray-200 rounded w-1/3 mb-2"></div>
+                    <div className="h-3 bg-gray-200 rounded w-2/3"></div>
+                </div>
+                
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 space-y-4">
+                        <div className="h-5 bg-gray-200 rounded w-1/2 mb-4"></div>
+                        <CardSkeleton lines={3} />
+                    </div>
+                    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 space-y-4">
+                        <div className="h-5 bg-gray-200 rounded w-1/2 mb-4"></div>
+                        <CardSkeleton lines={3} />
+                    </div>
+                    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 space-y-4">
+                        <div className="h-5 bg-gray-200 rounded w-1/2 mb-4"></div>
+                        <CardSkeleton lines={3} />
+                    </div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 space-y-4">
+                    <div className="h-5 bg-gray-200 rounded w-1/4 mb-4"></div>
+                    <TableSkeleton rows={4} cols={5} />
+                </div>
+            </div>
+        )
+    }
+
+    // ─── Render Error Banner ───
+    if (error) {
+        return (
+            <div className="bg-white rounded-2xl border border-rose-100 p-8 text-center max-w-xl mx-auto my-12 shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-300">
+                <div className="w-16 h-16 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
+                    <AlertTriangle className="w-8 h-8" />
+                </div>
+                <h3 className="text-xl font-bold text-slate-800">Failed to Load Admin Settings</h3>
+                <p className="text-sm text-gray-500 mt-2 leading-relaxed">
+                    {error.message || 'An unexpected error occurred while fetching organizational configuration.'}
+                </p>
+                <button 
+                    onClick={() => window.location.reload()} 
+                    className="mt-6 inline-flex items-center gap-2 px-5 py-2.5 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 transition-colors shadow-sm"
+                >
+                    <RefreshCw className="w-4 h-4" />
+                    Retry Loading
+                </button>
+            </div>
+        )
     }
 
     return (
@@ -210,90 +348,152 @@ export default function AdminSettings() {
                 <>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* ── Departments Panel ── */}
                 <Panel title="Departments" icon={Users}>
                     <div className="flex gap-2 mb-4">
                         <input
+                            disabled={addDepartmentMutation.isPending}
                             value={forms.department}
                             onChange={(e) => setForms(prev => ({ ...prev, department: e.target.value }))}
-                            placeholder="Department name"
-                            className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm"
+                            placeholder={addDepartmentMutation.isPending ? "Adding..." : "Department name"}
+                            className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm disabled:opacity-50"
                         />
-                        <button onClick={addDepartment} className="p-2 rounded-lg bg-slate-900 text-white"><Plus className="w-4 h-4" /></button>
+                        <button 
+                            disabled={addDepartmentMutation.isPending || !forms.department.trim()}
+                            onClick={addDepartment} 
+                            className="p-2 rounded-lg bg-slate-900 text-white disabled:opacity-50 flex items-center justify-center min-w-9"
+                        >
+                            {addDepartmentMutation.isPending ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                        </button>
                     </div>
                     <div className="space-y-2">
                         {departments.map(dept => (
                             <div key={dept.id} className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 text-sm font-semibold">
                                 <span>{dept.name}</span>
-                                <button onClick={() => removeRow('departments', dept.id)} className="text-rose-500"><Trash2 className="w-4 h-4" /></button>
+                                <button 
+                                    disabled={removeRowMutation.isPending}
+                                    onClick={() => removeRow('departments', dept.id)} 
+                                    className="text-rose-500 hover:text-rose-700 disabled:opacity-50 transition-colors"
+                                >
+                                    <Trash2 className="w-4 h-4" />
+                                </button>
                             </div>
                         ))}
+                        {departments.length === 0 && (
+                            <p className="text-xs text-gray-400 text-center py-4">No departments configured.</p>
+                        )}
                     </div>
                 </Panel>
 
+                {/* ── Holidays Panel ── */}
                 <Panel title="Holidays" icon={CalendarDays}>
                     <div className="space-y-2 mb-4">
                         <input
+                            disabled={addHolidayMutation.isPending}
                             value={forms.holidayName}
                             onChange={(e) => setForms(prev => ({ ...prev, holidayName: e.target.value }))}
-                            placeholder="Holiday name"
-                            className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
+                            placeholder={addHolidayMutation.isPending ? "Adding..." : "Holiday name"}
+                            className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm disabled:opacity-50"
                         />
                         <div className="flex gap-2">
                             <input
+                                disabled={addHolidayMutation.isPending}
                                 type="date"
                                 value={forms.holidayDate}
                                 onChange={(e) => setForms(prev => ({ ...prev, holidayDate: e.target.value }))}
-                                className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm"
+                                className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm disabled:opacity-50"
                             />
-                            <button onClick={addHoliday} className="p-2 rounded-lg bg-slate-900 text-white"><Plus className="w-4 h-4" /></button>
+                            <button 
+                                disabled={addHolidayMutation.isPending || !forms.holidayName.trim() || !forms.holidayDate}
+                                onClick={addHoliday} 
+                                className="p-2 rounded-lg bg-slate-900 text-white disabled:opacity-50 flex items-center justify-center min-w-9"
+                            >
+                                {addHolidayMutation.isPending ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                            </button>
                         </div>
                     </div>
                     <div className="space-y-2 max-h-72 overflow-y-auto">
                         {holidays.map(holiday => (
                             <div key={holiday.id} className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 text-sm">
                                 <span><b>{holiday.name}</b><br /><span className="text-xs text-gray-500">{holiday.date}</span></span>
-                                <button onClick={() => removeRow('holidays', holiday.id)} className="text-rose-500"><Trash2 className="w-4 h-4" /></button>
+                                <button 
+                                    disabled={removeRowMutation.isPending}
+                                    onClick={() => removeRow('holidays', holiday.id)} 
+                                    className="text-rose-500 hover:text-rose-700 disabled:opacity-50 transition-colors"
+                                >
+                                    <Trash2 className="w-4 h-4" />
+                                </button>
                             </div>
                         ))}
+                        {holidays.length === 0 && (
+                            <p className="text-xs text-gray-400 text-center py-4">No holidays registered.</p>
+                        )}
                     </div>
                 </Panel>
 
+                {/* ── Leave Policies Panel ── */}
                 <Panel title="Leave Policies" icon={ClipboardList}>
                     <button
+                        disabled={initializeLeaveBalancesMutation.isPending}
                         onClick={initializeLeaveBalances}
-                        className="mb-4 w-full rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700 transition"
+                        className="mb-4 w-full rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
                     >
-                        Initialize Current Year Balances
+                        {initializeLeaveBalancesMutation.isPending ? (
+                            <>
+                                <RefreshCw className="w-4 h-4 animate-spin" />
+                                Initializing...
+                            </>
+                        ) : (
+                            "Initialize Current Year Balances"
+                        )}
                     </button>
                     <div className="space-y-2 mb-4">
                         <input
+                            disabled={addLeavePolicyMutation.isPending}
                             value={forms.leaveType}
                             onChange={(e) => setForms(prev => ({ ...prev, leaveType: e.target.value }))}
-                            placeholder="Leave type"
-                            className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
+                            placeholder={addLeavePolicyMutation.isPending ? "Adding..." : "Leave type"}
+                            className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm disabled:opacity-50"
                         />
                         <div className="flex gap-2">
                             <input
+                                disabled={addLeavePolicyMutation.isPending}
                                 type="number"
                                 value={forms.annualBalance}
                                 onChange={(e) => setForms(prev => ({ ...prev, annualBalance: e.target.value }))}
                                 placeholder="Annual balance"
-                                className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm"
+                                className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm disabled:opacity-50"
                             />
-                            <button onClick={addLeavePolicy} className="p-2 rounded-lg bg-slate-900 text-white"><Plus className="w-4 h-4" /></button>
+                            <button 
+                                disabled={addLeavePolicyMutation.isPending || !forms.leaveType.trim() || !forms.annualBalance}
+                                onClick={addLeavePolicy} 
+                                className="p-2 rounded-lg bg-slate-900 text-white disabled:opacity-50 flex items-center justify-center min-w-9"
+                            >
+                                {addLeavePolicyMutation.isPending ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                            </button>
                         </div>
                     </div>
                     <div className="space-y-2">
                         {leavePolicies.map(policy => (
                             <div key={policy.id} className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 text-sm">
                                 <span><b>{policy.leave_type}</b><br /><span className="text-xs text-gray-500">{policy.annual_balance} days/year</span></span>
-                                <button onClick={() => removeRow('leave_policies', policy.id)} className="text-rose-500"><Trash2 className="w-4 h-4" /></button>
+                                <button 
+                                    disabled={removeRowMutation.isPending}
+                                    onClick={() => removeRow('leave_policies', policy.id)} 
+                                    className="text-rose-500 hover:text-rose-700 disabled:opacity-50 transition-colors"
+                                >
+                                    <Trash2 className="w-4 h-4" />
+                                </button>
                             </div>
                         ))}
+                        {leavePolicies.length === 0 && (
+                            <p className="text-xs text-gray-400 text-center py-4">No leave policies defined.</p>
+                        )}
                     </div>
                 </Panel>
             </div>
 
+            {/* ── Recent Audit Logs Panel ── */}
             <Panel title="Recent Audit Logs" icon={History}>
                 <div className="overflow-x-auto">
                     <table className="w-full text-left">
@@ -320,8 +520,8 @@ export default function AdminSettings() {
                                         </span>
                                     </td>
                                     <td className="px-4 py-3 text-sm font-bold text-slate-800">{log.table_name}</td>
-                                    <td className="px-4 py-3 text-xs text-gray-500 font-mono">{log.record_id || '-'}</td>
-                                    <td className="px-4 py-3 text-xs text-gray-500 font-mono">{log.actor_id || 'system'}</td>
+                                    <td className="px-4 py-3 text-xs text-gray-700 font-medium" title={log.record_id || ''}>{getReadableRecordLabel(log)}</td>
+                                    <td className="px-4 py-3 text-xs text-gray-700 font-medium" title={log.actor_id || 'system'}>{log.actor_id ? (actorMap[log.actor_id]?.name || 'Loading...') : 'system'}</td>
                                 </tr>
                             ))}
                         </tbody>
@@ -421,6 +621,7 @@ export default function AdminSettings() {
                 })()}
             </Panel>
 
+            {/* ── Recent Email Notifications Panel ── */}
             <Panel title="Recent Email Notifications" icon={History}>
                 <div className="overflow-x-auto">
                     <table className="w-full text-left">

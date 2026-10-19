@@ -1,7 +1,11 @@
 import { useState, useEffect } from 'react'
 import { Shield, Download, Trash2, CheckCircle, AlertTriangle, ShieldAlert, Key, Clipboard, HelpCircle } from 'lucide-react'
-import { supabase } from '../../lib/supabase'
-import { applyCompanyFilter, withCompanyScope } from '../../services/tenantScope'
+import {
+    usePortalPrivacyConsent,
+    useCreatePrivacyConsentMutation,
+    useAnonymizeProfileMutation,
+    usePortalDownloadDataMutation
+} from '../../hooks/usePortalData'
 
 export default function PortalPrivacyTab({
     currentEmployee,
@@ -9,9 +13,11 @@ export default function PortalPrivacyTab({
     isAdmin,
     toast
 }) {
-    const [hasConsent, setHasConsent] = useState(false)
-    const [consentRecord, setConsentRecord] = useState(null)
-    const [consentLoading, setConsentLoading] = useState(true)
+    const privacyConsentQuery = usePortalPrivacyConsent(viewAsId)
+    const hasConsent = !!privacyConsentQuery.data
+    const consentRecord = privacyConsentQuery.data
+    const consentLoading = privacyConsentQuery.isLoading
+
     const [acceptingConsent, setAcceptingConsent] = useState(false)
     const [downloading, setDownloading] = useState(false)
     const [anonymizing, setAnonymizing] = useState(false)
@@ -31,41 +37,13 @@ export default function PortalPrivacyTab({
         }
     }
 
-    // Check existing consent record
-    const checkConsent = async () => {
-        if (!viewAsId) return
-        setConsentLoading(true)
-        try {
-            const { data, error } = await applyCompanyFilter(
-                supabase
-                    .from('privacy_consents')
-                    .select('*')
-            )
-                .eq('employee_id', viewAsId)
-                .order('accepted_at', { ascending: false })
-                .limit(1)
-                .maybeSingle()
-
-            if (error) throw error
-
-            if (data) {
-                setHasConsent(true)
-                setConsentRecord(data)
-            } else {
-                setHasConsent(false)
-                setConsentRecord(null)
-            }
-        } catch (err) {
-            console.error('Error fetching privacy consent:', err)
-        } finally {
-            setConsentLoading(false)
-        }
-    }
-
     useEffect(() => {
         detectIp()
-        checkConsent()
     }, [viewAsId])
+
+    const createConsentMutation = useCreatePrivacyConsentMutation(viewAsId)
+    const downloadDataMutation = usePortalDownloadDataMutation(viewAsId)
+    const anonymizeProfileMutation = useAnonymizeProfileMutation()
 
     const handleAcceptConsent = async () => {
         if (!acceptedCheckbox) {
@@ -76,28 +54,7 @@ export default function PortalPrivacyTab({
 
         setAcceptingConsent(true)
         try {
-            const payload = withCompanyScope({
-                employee_id: viewAsId,
-                consent_version: '1.0',
-                ip_address: userIp,
-                accepted_at: new Date().toISOString(),
-                metadata: {
-                    browser: navigator.userAgent,
-                    platform: navigator.platform,
-                    compliance_frameworks: ['GDPR', 'DPDP_INDIA_2023']
-                }
-            })
-
-            const { data, error } = await supabase
-                .from('privacy_consents')
-                .insert([payload])
-                .select('*')
-                .single()
-
-            if (error) throw error
-
-            setHasConsent(true)
-            setConsentRecord(data)
+            await createConsentMutation.mutateAsync({ userIp })
             toast.success('Thank you! Your privacy consent has been securely recorded for audit compliance.')
         } catch (err) {
             console.error('Consent error:', err)
@@ -113,60 +70,44 @@ export default function PortalPrivacyTab({
         toast.info('Compiling your personal data registry package. This might take a few seconds...')
 
         try {
-            // Concurrent execution to compile all PII tables
-            const [
-                empRes,
-                attRes,
-                leaveRes,
-                taxRes,
-                payrollRes,
-                consentsRes
-            ] = await Promise.all([
-                supabase.from('employees').select('*').eq('id', viewAsId).single(),
-                applyCompanyFilter(supabase.from('attendance').select('*')).eq('employee_id', viewAsId).order('date', { ascending: false }),
-                applyCompanyFilter(supabase.from('leaves').select('*')).eq('employee_id', viewAsId).order('start_date', { ascending: false }),
-                applyCompanyFilter(supabase.from('tax_declarations').select('*')).eq('employee_id', viewAsId),
-                applyCompanyFilter(supabase.from('payroll_items').select('*')).eq('employee_id', viewAsId).order('created_at', { ascending: false }),
-                applyCompanyFilter(supabase.from('privacy_consents').select('*')).eq('employee_id', viewAsId).order('accepted_at', { ascending: false })
-            ])
-
-            if (empRes.error) throw empRes.error
+            const res = await downloadDataMutation.mutateAsync()
+            if (!res) throw new Error('Data empty')
 
             const exportData = {
                 metadata: {
                     compliance_regulatory_standard: 'GDPR / India Digital Personal Data Protection (DPDP) Act 2023',
                     export_timestamp: new Date().toISOString(),
                     exported_by_id: viewAsId,
-                    data_subject_name: `${empRes.data.first_name} ${empRes.data.last_name}`,
-                    tenant_company_id: empRes.data.company_id
+                    data_subject_name: `${res.employee.first_name} ${res.employee.last_name}`,
+                    tenant_company_id: res.employee.company_id
                 },
                 profile: {
-                    employee_id: empRes.data.employee_id,
-                    first_name: empRes.data.first_name,
-                    last_name: empRes.data.last_name,
-                    email: empRes.data.email,
-                    phone: empRes.data.phone,
-                    role: empRes.data.role,
-                    designation: empRes.data.designation,
-                    department: empRes.data.department,
-                    joining_date: empRes.data.joining_date,
+                    employee_id: res.employee.employee_id,
+                    first_name: res.employee.first_name,
+                    last_name: res.employee.last_name,
+                    email: res.employee.email,
+                    phone: res.employee.phone,
+                    role: res.employee.role,
+                    designation: res.employee.designation,
+                    department: res.employee.department,
+                    joining_date: res.employee.joining_date,
                     emergency_contact: {
-                        name: empRes.data.emergency_contact_person,
-                        phone: empRes.data.emergency_contact_number,
-                        relationship: empRes.data.emergency_contact_relationship
+                        name: res.employee.emergency_contact_person,
+                        phone: res.employee.emergency_contact_number,
+                        relationship: res.employee.emergency_contact_relationship
                     },
-                    current_address: empRes.data.current_address,
-                    permanent_address: empRes.data.permanent_address,
-                    status: empRes.data.status
+                    current_address: res.employee.current_address,
+                    permanent_address: res.employee.permanent_address,
+                    status: res.employee.status
                 },
-                attendance_records: (attRes.data || []).map(r => ({
+                attendance_records: res.attendance.map(r => ({
                     date: r.date,
                     status: r.status,
                     check_in: r.check_in,
                     check_out: r.check_out,
                     remarks: r.remarks
                 })),
-                leave_records: (leaveRes.data || []).map(r => ({
+                leave_records: res.leaves.map(r => ({
                     leave_type: r.leave_type,
                     start_date: r.start_date,
                     end_date: r.end_date,
@@ -174,7 +115,7 @@ export default function PortalPrivacyTab({
                     status: r.status,
                     reason: r.reason
                 })),
-                tax_declarations: (taxRes.data || []).map(r => ({
+                tax_declarations: res.taxDeclarations.map(r => ({
                     financial_year: r.financial_year,
                     regime: r.regime,
                     section_80c: r.section_80c,
@@ -185,7 +126,7 @@ export default function PortalPrivacyTab({
                     other_income: r.other_income,
                     status: r.status
                 })),
-                payroll_slips_aggregates: (payrollRes.data || []).map(r => ({
+                payroll_slips_aggregates: res.payrollItems.map(r => ({
                     id: r.id,
                     basic_salary: r.basic_salary,
                     net_salary: r.net_salary,
@@ -194,7 +135,7 @@ export default function PortalPrivacyTab({
                     attendance_days: r.attendance_days,
                     created_at: r.created_at
                 })),
-                logged_consents: (consentsRes.data || []).map(r => ({
+                logged_consents: res.privacyConsents.map(r => ({
                     consent_version: r.consent_version,
                     accepted_at: r.accepted_at,
                     ip_address: r.ip_address,
@@ -207,7 +148,7 @@ export default function PortalPrivacyTab({
             const url = URL.createObjectURL(blob)
             const link = document.createElement('a')
             link.href = url
-            link.download = `personal_data_export_${empRes.data.employee_id || viewAsId}_${new Date().toISOString().split('T')[0]}.json`
+            link.download = `personal_data_export_${res.employee.employee_id || viewAsId}_${new Date().toISOString().split('T')[0]}.json`
             document.body.appendChild(link)
             link.click()
             document.body.removeChild(link)
@@ -231,11 +172,7 @@ export default function PortalPrivacyTab({
 
         setAnonymizing(true)
         try {
-            const { error } = await supabase.rpc('anonymize_employee_profile', {
-                p_employee_id: viewAsId
-            })
-
-            if (error) throw error
+            await anonymizeProfileMutation.mutateAsync(viewAsId)
 
             toast.success('Employee profile has been successfully anonymized and detached from corporate login systems.')
             setShowAnonymizeModal(false)

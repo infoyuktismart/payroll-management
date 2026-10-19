@@ -290,7 +290,7 @@ export default function PortalPayrollTab({
                                 <div className="flex flex-wrap items-center gap-2">
                                     <button
                                         type="button"
-                                        onClick={() => generateForm12BB({
+                                        onClick={async () => await generateForm12BB({
                                             employee: currentEmployee,
                                             company: company || {},
                                             taxForm,

@@ -20,16 +20,16 @@ export const billingService = {
     /**
      * Fetch billing dashboard stats and recent invoices.
      */
-    async getBillingDashboard() {
+    async getBillingDashboard(companyId) {
         return withRetry(async () => {
-            const companyId = getActiveCompanyId()
-            if (!companyId) return { invoices: [], stats: {} }
+            const finalCompanyId = companyId || getActiveCompanyId()
+            if (!finalCompanyId) return { invoices: [], stats: {} }
 
             // Get active employees count
             const { count: activeEmployees } = await supabase
                 .from('employees')
                 .select('id', { count: 'exact', head: true })
-                .eq('company_id', companyId)
+                .eq('company_id', finalCompanyId)
                 .eq('status', 'active')
 
             // Fetch subscription plan details
@@ -37,7 +37,7 @@ export const billingService = {
                 supabase
                     .from('company_subscriptions')
                     .select('*, plan:subscription_plans(*)')
-                    .eq('company_id', companyId)
+                    .eq('company_id', finalCompanyId)
                     .maybeSingle()
             )
 
@@ -45,7 +45,7 @@ export const billingService = {
             let invoicesQuery = supabase
                 .from('billing_invoices')
                 .select('*')
-                .eq('company_id', companyId)
+                .eq('company_id', finalCompanyId)
                 .order('billing_period_start', { ascending: false })
 
             const invoicesRes = await emptyOnMissing(invoicesQuery)
@@ -85,15 +85,15 @@ export const billingService = {
     /**
      * Get paginated list of invoices.
      */
-    async getInvoices({ page = 0, pageSize = 50, status = 'all' } = {}) {
+    async getInvoices({ companyId, page = 0, pageSize = 50, status = 'all' } = {}) {
         return withRetry(async () => {
-            const companyId = getActiveCompanyId()
-            if (!companyId) return { data: [], count: 0 }
+            const finalCompanyId = companyId || getActiveCompanyId()
+            if (!finalCompanyId) return { data: [], count: 0 }
 
             let query = supabase
                 .from('billing_invoices')
                 .select('*', { count: 'exact' })
-                .eq('company_id', companyId)
+                .eq('company_id', finalCompanyId)
                 .order('billing_period_start', { ascending: false })
 
             if (status !== 'all') {
@@ -144,10 +144,10 @@ export const billingService = {
     /**
      * Generate an invoice for a specific period and model.
      */
-    async generateInvoice({ billingPeriodStart, billingPeriodEnd, billingModel = 'per_employee', customNote = '' } = {}) {
+    async generateInvoice({ companyId, billingPeriodStart, billingPeriodEnd, billingModel = 'per_employee', customNote = '' } = {}) {
         return withRetry(async () => {
-            const companyId = getActiveCompanyId()
-            if (!companyId) throw new Error('No active company selected')
+            const finalCompanyId = companyId || getActiveCompanyId()
+            if (!finalCompanyId) throw new Error('No active company selected')
 
             const { data: { user } } = await supabase.auth.getUser()
 
@@ -156,7 +156,7 @@ export const billingService = {
                 supabase
                     .from('company_subscriptions')
                     .select('*, plan:subscription_plans(*)')
-                    .eq('company_id', companyId)
+                    .eq('company_id', finalCompanyId)
                     .maybeSingle()
             )
 
@@ -170,7 +170,7 @@ export const billingService = {
             const { count: activeEmployees, error: empError } = await supabase
                 .from('employees')
                 .select('id', { count: 'exact', head: true })
-                .eq('company_id', companyId)
+                .eq('company_id', finalCompanyId)
                 .eq('status', 'active')
 
             if (empError) throw empError
@@ -216,7 +216,7 @@ export const billingService = {
 
             // Create Invoice
             const invoicePayload = {
-                company_id: companyId,
+                company_id: finalCompanyId,
                 subscription_id: subscription.id,
                 invoice_number: invoiceNumber,
                 billing_period_start: billingPeriodStart,

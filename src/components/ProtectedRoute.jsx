@@ -7,8 +7,12 @@ import PlanRestricted from './PlanRestricted'
 
 export default function ProtectedRoute({ children }) {
     const { user, loading, isAdmin, profileData, twoFactorChallenge, isTwoFactorVerified } = useAuth()
-    const { loading: entitlementLoading, entitlements, canUseFeature } = usePlanEntitlements()
     const location = useLocation()
+    const requiredFeature = ROUTE_FEATURES[location.pathname]
+    const shouldCheckEntitlements = Boolean(isAdmin && requiredFeature && profileData?.role !== 'superadmin')
+    const { loading: entitlementLoading, entitlements, canUseFeature } = usePlanEntitlements({
+        enabled: shouldCheckEntitlements
+    })
 
     if (loading) {
         devLog('ProtectedRoute: Loading...')
@@ -40,7 +44,6 @@ export default function ProtectedRoute({ children }) {
         return <Navigate to="/portal" replace />
     }
 
-    const requiredFeature = ROUTE_FEATURES[location.pathname]
     if (isAdmin && requiredFeature && profileData?.role !== 'superadmin') {
         if (entitlementLoading) {
             return (

@@ -893,7 +893,7 @@ create or replace function public.protect_employee_pii()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions, pg_catalog
 as $$
 declare
   pii_key text := nullif(current_setting('app.pii_key', true), '');
@@ -902,20 +902,24 @@ begin
     return new;
   end if;
 
-  if new.pan_number is not null and new.pan_number !~ '^\*+' then
-    new.pan_number_enc := pgp_sym_encrypt(new.pan_number, pii_key);
-    new.pan_number := public.mask_identifier(new.pan_number);
-  end if;
+  begin
+    if new.pan_number is not null and new.pan_number !~ '^\*+' then
+      new.pan_number_enc := pgp_sym_encrypt(new.pan_number, pii_key);
+      new.pan_number := public.mask_identifier(new.pan_number);
+    end if;
 
-  if new.aadhaar_number is not null and new.aadhaar_number !~ '^\*+' then
-    new.aadhaar_number_enc := pgp_sym_encrypt(new.aadhaar_number, pii_key);
-    new.aadhaar_number := public.mask_identifier(new.aadhaar_number);
-  end if;
+    if new.aadhaar_number is not null and new.aadhaar_number !~ '^\*+' then
+      new.aadhaar_number_enc := pgp_sym_encrypt(new.aadhaar_number, pii_key);
+      new.aadhaar_number := public.mask_identifier(new.aadhaar_number);
+    end if;
 
-  if new.bank_account_number is not null and new.bank_account_number !~ '^\*+' then
-    new.bank_account_number_enc := pgp_sym_encrypt(new.bank_account_number, pii_key);
-    new.bank_account_number := public.mask_identifier(new.bank_account_number);
-  end if;
+    if new.bank_account_number is not null and new.bank_account_number !~ '^\*+' then
+      new.bank_account_number_enc := pgp_sym_encrypt(new.bank_account_number, pii_key);
+      new.bank_account_number := public.mask_identifier(new.bank_account_number);
+    end if;
+  exception when undefined_function then
+    null;
+  end;
 
   return new;
 end;

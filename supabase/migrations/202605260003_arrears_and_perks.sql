@@ -28,11 +28,26 @@ alter table public.salary_arrears_logs enable row level security;
 create policy "Users can view arrears logs for their company"
   on public.salary_arrears_logs
   for select
-  using (true);
+  using (
+    public.user_has_company_access(company_id)
+    or exists (
+      select 1
+      from public.employees e
+      where e.id = salary_arrears_logs.employee_id
+        and e.user_id = auth.uid()
+    )
+  );
 
 create policy "Admins can insert/update arrears logs"
   on public.salary_arrears_logs
   for all
-  using (true);
+  using (
+    public.is_admin_or_hr()
+    and public.user_has_company_access(company_id)
+  )
+  with check (
+    public.is_admin_or_hr()
+    and public.user_has_company_access(company_id)
+  );
 
 commit;

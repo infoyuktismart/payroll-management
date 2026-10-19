@@ -5,6 +5,7 @@ create or replace function public.is_first_run()
 returns boolean
 language plpgsql
 security definer
+set search_path = public, pg_temp
 as $$
 begin
   return not exists (

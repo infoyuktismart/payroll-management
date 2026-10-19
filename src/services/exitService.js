@@ -130,5 +130,26 @@ export const exitService = {
             if (error) throw error
             return data
         })
+    },
+
+    /**
+     * Get exit/resignation record for a specific employee.
+     * @param {any} employeeId - The employee ID
+     * @returns {Promise<any>} A promise that resolves with the result
+     */
+    async getExitByEmployeeId(employeeId) {
+        return withRetry(async () => {
+            let query = supabase
+                .from('exits')
+                .select('*')
+                .eq('employee_id', employeeId)
+                .order('created_at', { ascending: false })
+            query = applyCompanyFilter(query)
+            const { data, error } = await query
+                .limit(1)
+                .maybeSingle()
+            if (error) throw error
+            return data
+        })
     }
 }

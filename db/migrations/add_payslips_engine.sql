@@ -90,6 +90,8 @@ JOIN public.payroll_runs    pr ON pr.id = pi.payroll_run_id
 JOIN public.employees        e  ON e.id  = pi.employee_id
 WHERE pr.status IN ('Completed', 'Paid');
 
+ALTER VIEW public.payslips SET (security_invoker = true);
+
 -- RLS: payslips view inherits policies from underlying tables.
 -- Employees see only their own rows; admins see all within company.
 -- No explicit RLS needed on the view itself since it filters through payroll_items policy.

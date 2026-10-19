@@ -93,6 +93,7 @@ create policy "Invoice line items manage admin"
 create or replace function public.next_invoice_number()
 returns text
 language plpgsql
+set search_path = public, pg_temp
 as $$
 declare
   current_year_month text;

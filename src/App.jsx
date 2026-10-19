@@ -7,9 +7,9 @@ import { CompanyProvider } from './context/CompanyContext'
 import ErrorBoundary from './components/ErrorBoundary'
 import RouteErrorBoundary from './components/RouteErrorBoundary'
 import ProtectedRoute from './components/ProtectedRoute'
-import DashboardLayout from './layouts/DashboardLayout'
 import PageLoader from './components/PageLoader'
 
+const DashboardLayout = lazy(() => import('./layouts/DashboardLayout'))
 const Login = lazy(() => import('./pages/Login'))
 const Landing = lazy(() => import('./pages/Landing'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))

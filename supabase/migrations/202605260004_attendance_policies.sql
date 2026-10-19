@@ -28,11 +28,21 @@ alter table public.attendance_policies enable row level security;
 create policy "Users can view attendance policies for their company"
   on public.attendance_policies
   for select
-  using (true);
+  using (
+    auth.role() = 'authenticated'
+    and public.user_has_company_access(company_id)
+  );
 
 create policy "Admins can manage attendance policies"
   on public.attendance_policies
   for all
-  using (true);
+  using (
+    public.is_admin_or_hr()
+    and public.user_has_company_access(company_id)
+  )
+  with check (
+    public.is_admin_or_hr()
+    and public.user_has_company_access(company_id)
+  );
 
 commit;

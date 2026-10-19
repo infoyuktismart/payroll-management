@@ -30,15 +30,13 @@ const moduleCards = [
 export default function Landing() {
     const { user, loading, isAdmin, twoFactorChallenge, isTwoFactorVerified } = useAuth()
 
-    if (loading) return null
-
     const pendingTwoFactor = user && twoFactorChallenge?.userId === user.id && !isTwoFactorVerified(user.id)
 
     if (pendingTwoFactor) {
         return <Navigate to="/login" replace />
     }
 
-    if (user) {
+    if (!loading && user) {
         return <Navigate to={isAdmin ? '/dashboard' : '/portal'} replace />
     }
 

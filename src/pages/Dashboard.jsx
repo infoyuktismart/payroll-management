@@ -16,12 +16,12 @@ import { useCompany } from '../context/CompanyContext'
 // --- Components ---
 
 const StatCard = ({ title, value, icon: Icon, colorClass, borderClass }) => (
-    <div className={`bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex items-center justify-between transition-all duration-300 hover:scale-[1.02] hover:shadow-md cursor-default group border-l-[6px] ${borderClass}`}>
+    <div className={`bg-white p-5 rounded-2xl border border-gray-100 shadow-sm flex items-center justify-between transition-all duration-300 hover:scale-[1.02] hover:shadow-md cursor-default group border-l-4 ${borderClass}`}>
         <div>
-            <p className="text-[11px] font-bold text-gray-600 mb-1 group-hover:text-gray-500 transition-colors uppercase tracking-widest">{title}</p>
-            <p className="text-3xl font-bold text-gray-900 group-hover:scale-105 transition-transform origin-left">{value}</p>
+            <p className="text-xs font-semibold text-slate-500 mb-1 group-hover:text-slate-700 transition-colors uppercase tracking-wider">{title}</p>
+            <p className="text-2xl font-bold text-slate-900 group-hover:scale-105 transition-transform origin-left">{value}</p>
         </div>
-        <div className={`p-3 rounded-xl transition-all duration-300 group-hover:rotate-12 group-hover:scale-110 shadow-sm ${colorClass}`}>
+        <div className={`p-3 rounded-xl transition-all duration-300 group-hover:rotate-6 group-hover:scale-105 shadow-sm ${colorClass}`}>
             <Icon className="w-5 h-5" />
         </div>
     </div>
@@ -217,8 +217,8 @@ export default function Dashboard() {
     return (
         <div className="space-y-6">
             <header>
-                <h1 className="text-3xl font-bold text-slate-800">Welcome Back, {company?.name || 'Admin'}</h1>
-                <p className="text-sm font-medium text-gray-600 mt-1">Here is what is happening with your payroll system today.</p>
+                <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Welcome Back, {company?.name || 'Admin'}</h1>
+                <p className="text-sm text-slate-500 mt-1">Here is what is happening with your payroll system today.</p>
             </header>
 
             {loading ? (

@@ -7,7 +7,7 @@ import { enterpriseAdminService } from '../services/enterpriseAdminService'
 import { formatCurrency } from '../lib/payrollUtils'
 import { useCompany } from '../context/CompanyContext'
 
-export default function SubscriptionStatusBanner() {
+export default function SubscriptionStatusBanner({ onlyUrgent = false }) {
     const { activeCompanyId } = useCompany()
     const {
         data: dashboard,
@@ -15,7 +15,7 @@ export default function SubscriptionStatusBanner() {
         isLoading: loading
     } = useQuery({
         queryKey: ['subscriptionDashboard', activeCompanyId],
-        queryFn: () => enterpriseAdminService.getSubscriptionDashboard(),
+        queryFn: () => enterpriseAdminService.getSubscriptionDashboard(activeCompanyId),
         enabled: Boolean(activeCompanyId),
         staleTime: 5 * 60 * 1000,
         gcTime: 15 * 60 * 1000,
@@ -46,15 +46,11 @@ export default function SubscriptionStatusBanner() {
     }, [dashboard])
 
     if (loading) {
-        return (
-            <div className="mb-4 flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-500">
-                <RefreshCw className="h-4 w-4 animate-spin" />
-                Checking subscription status...
-            </div>
-        )
+        return null
     }
 
     if (error) {
+        if (onlyUrgent) return null
         return (
             <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
                 <div className="flex items-center gap-3">
@@ -69,6 +65,7 @@ export default function SubscriptionStatusBanner() {
     }
 
     if (!status) {
+        if (onlyUrgent) return null
         return (
             <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
                 <div className="flex items-center gap-3">
@@ -84,6 +81,12 @@ export default function SubscriptionStatusBanner() {
 
     const isTrial = status.subscription.status === 'trialing'
     const isUrgent = isTrial && status.daysLeft !== null && status.daysLeft <= 3
+
+    // If onlyUrgent is requested and it's not urgent/expired, do not show intrusive banner
+    if (onlyUrgent && !isUrgent) {
+        return null
+    }
+
     const palette = isUrgent
         ? 'border-amber-200 bg-amber-50 text-amber-950'
         : 'border-emerald-200 bg-emerald-50 text-emerald-950'
@@ -114,5 +117,47 @@ export default function SubscriptionStatusBanner() {
                 Manage Subscription
             </Link>
         </div>
+    )
+}
+
+/**
+ * Compact, modern header pill for enterprise-grade navigation (Keka-style)
+ */
+export function SubscriptionHeaderPill() {
+    const { activeCompanyId } = useCompany()
+    const { data: dashboard } = useQuery({
+        queryKey: ['subscriptionDashboard', activeCompanyId],
+        queryFn: () => enterpriseAdminService.getSubscriptionDashboard(activeCompanyId),
+        enabled: Boolean(activeCompanyId),
+        staleTime: 5 * 60 * 1000,
+        gcTime: 15 * 60 * 1000,
+        refetchOnMount: false,
+        refetchOnWindowFocus: false,
+    })
+
+    const subscription = dashboard?.subscription
+    const plan = subscription?.plan
+    if (!subscription || !plan) return null
+
+    const isTrial = subscription.status === 'trialing'
+    const trialEnd = subscription.trial_ends_at ? new Date(subscription.trial_ends_at) : null
+    const daysLeft = trialEnd ? differenceInCalendarDays(trialEnd, new Date()) : null
+    const isUrgent = isTrial && daysLeft !== null && daysLeft <= 3
+
+    return (
+        <Link
+            to="/subscription-management"
+            className={`hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border transition-all duration-150 ${
+                isUrgent
+                    ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100 shadow-xs'
+                    : 'bg-emerald-50 text-emerald-800 border-emerald-200/90 hover:bg-emerald-100 shadow-xs'
+            }`}
+            title="Click to view subscription and billing details"
+        >
+            <Crown className={`w-3.5 h-3.5 ${isUrgent ? 'text-amber-600' : 'text-emerald-600'}`} />
+            <span>
+                {isTrial ? `${plan.name} Trial • ${Math.max(daysLeft ?? 0, 0)}d left` : `${plan.name}`}
+            </span>
+        </Link>
     )
 }

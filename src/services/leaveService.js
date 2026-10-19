@@ -34,6 +34,7 @@ export const leaveService = {
             let query = supabase
                 .from('leaves')
                 .select('*', { count: 'exact' })
+                .eq('is_deleted', false)
                 .order('created_at', { ascending: false })
             query = applyCompanyFilter(query)
             if (!isAdmin && employeeId) {
@@ -104,6 +105,7 @@ export const leaveService = {
                 .from('leaves')
                 .select('id, leave_type, employee:employees(first_name, last_name, email)')
                 .eq('id', id)
+                .eq('is_deleted', false)
             query = applyCompanyFilter(query)
             const { data, error } = await query
                 .single()
@@ -124,6 +126,7 @@ export const leaveService = {
                     *,
                     employee:employees(first_name, last_name, department)
                 `)
+                .eq('is_deleted', false)
                 .order('created_at', { ascending: false })
             query = applyCompanyFilter(query)
             const { data, error } = await query
@@ -144,6 +147,7 @@ export const leaveService = {
                 .from('leaves')
                 .select('*')
                 .eq('status', 'approved')
+                .eq('is_deleted', false)
                 .lte('start_date', endDate)
                 .gte('end_date', startDate)
             query = applyCompanyFilter(query)

@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { employeeService } from '../services/employeeService'
 import { leaveService } from '../services/leaveService'
 import { attendanceService } from '../services/attendanceService'
@@ -12,8 +13,7 @@ import { TableRowSkeleton } from '../components/ui/SkeletonLoader'
 import { calculateLeaveDays, getLeavePolicyOptions } from '../lib/leaveUtils'
 import { notifyLeaveStatus } from '../lib/notifications'
 import Pagination from '../components/Pagination'
-import { useQuery } from '@tanstack/react-query'
-import { supabase } from '../lib/supabase'
+import { useAllEmployees, useEmployeeByEmail } from '../hooks/useEmployees'
 import {
     useLeavePolicies,
     useLeaves,
@@ -37,26 +37,9 @@ export default function Leaves() {
         reason: ''
     })
 
-    // We assume the logged in user is linked to an employee record.
-    const [currentEmployee, setCurrentEmployee] = useState(null)
-    const [loadingEmployee, setLoadingEmployee] = useState(true)
+    // Fetch employee profile using custom query hook (caches & prevents multiple DB fetches)
+    const { data: currentEmployee = null, isLoading: loadingEmployee } = useEmployeeByEmail(user?.email)
     const [actionLoading, setActionLoading] = useState(false)
-
-    useEffect(() => {
-        const loadProfile = async () => {
-            if (!user) return
-            try {
-                setLoadingEmployee(true)
-                const emp = await employeeService.getEmployeeByEmail(user.email)
-                setCurrentEmployee(emp)
-            } catch (error) {
-                logger.error('Error loading employee profile:', error)
-            } finally {
-                setLoadingEmployee(false)
-            }
-        }
-        loadProfile()
-    }, [user])
 
     // Fetch leaves using paginated react-query hook
     const { data: leavesResponse, isLoading: leavesLoading } = useLeaves({
@@ -83,17 +66,8 @@ export default function Leaves() {
     const { data: leaveBalances = [] } = useLeaveBalances(currentEmployee?.id)
 
     // Fetch all employees for admin mapping
-    const { data: allEmployees = [] } = useQuery({
-        queryKey: ['allEmployeesForMapping'],
-        queryFn: async () => {
-            const { data, error } = await applyCompanyFilter(
-                supabase.from('employees').select('id, first_name, last_name')
-            )
-            if (error) throw error
-            return data || []
-        },
-        enabled: !!isAdmin
-    })
+    // Fetch all employees for admin mapping using custom query hook
+    const { data: allEmployees = [] } = useAllEmployees()
     const employees = useMemo(() => {
         const map = {}
         allEmployees.forEach(e => map[e.id] = `${e.first_name} ${e.last_name}`)

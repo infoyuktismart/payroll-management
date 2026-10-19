@@ -37,15 +37,67 @@ alter table public.employee_nominees enable row level security;
 
 -- RLS Policies
 create policy "Users can view job grades"
-  on public.job_grades for select using (true);
+  on public.job_grades for select using (
+    auth.role() = 'authenticated'
+    and public.user_has_company_access(company_id)
+  );
 
 create policy "Admins can manage job grades"
-  on public.job_grades for all using (true);
+  on public.job_grades for all
+  using (
+    public.is_admin_or_hr()
+    and public.user_has_company_access(company_id)
+  )
+  with check (
+    public.is_admin_or_hr()
+    and public.user_has_company_access(company_id)
+  );
 
 create policy "Users can view own nominees"
-  on public.employee_nominees for select using (true);
+  on public.employee_nominees for select using (
+    exists (
+      select 1
+      from public.employees e
+      where e.id = employee_nominees.employee_id
+        and (
+          e.user_id = auth.uid()
+          or (
+            public.is_admin_or_hr()
+            and public.user_has_company_access(e.company_id)
+          )
+        )
+    )
+  );
 
 create policy "Users can manage own nominees"
-  on public.employee_nominees for all using (true);
+  on public.employee_nominees for all
+  using (
+    exists (
+      select 1
+      from public.employees e
+      where e.id = employee_nominees.employee_id
+        and (
+          e.user_id = auth.uid()
+          or (
+            public.is_admin_or_hr()
+            and public.user_has_company_access(e.company_id)
+          )
+        )
+    )
+  )
+  with check (
+    exists (
+      select 1
+      from public.employees e
+      where e.id = employee_nominees.employee_id
+        and (
+          e.user_id = auth.uid()
+          or (
+            public.is_admin_or_hr()
+            and public.user_has_company_access(e.company_id)
+          )
+        )
+    )
+  );
 
 commit;

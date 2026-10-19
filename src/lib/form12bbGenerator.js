@@ -1,7 +1,6 @@
-import jsPDF from 'jspdf'
-
-export const generateForm12BB = ({ employee, company, taxForm, financialYear }) => {
-    const doc = new jsPDF()
+export const generateForm12BB = async ({ employee, company, taxForm, financialYear }) => {
+    const { default: jsPDFLib } = await import('jspdf')
+    const doc = new jsPDFLib()
     const primaryColor = [15, 23, 42]
     const accentColor = [37, 99, 235]
 

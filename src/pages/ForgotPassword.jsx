@@ -9,13 +9,17 @@ export default function ForgotPassword() {
     const [error, setError] = useState('')
     const [success, setSuccess] = useState(false)
 
+    const [cooldown, setCooldown] = useState(0)
+
     const handleSubmit = async (e) => {
         e.preventDefault()
+        if (loading || cooldown > 0) return
+
         setError('')
         setLoading(true)
 
         try {
-            const { error } = await supabase.auth.resetPasswordForEmail(email, {
+            const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
                 redirectTo: `${window.location.origin}/reset-password`,
             })
 
@@ -23,7 +27,26 @@ export default function ForgotPassword() {
 
             setSuccess(true)
         } catch (err) {
-            setError(err.message || 'Failed to send reset email. Please try again.')
+            const msg = err.message || ''
+            if (msg.toLowerCase().includes('error sending') || msg.toLowerCase().includes('internal server error')) {
+                setError('Unable to dispatch email. The mail service is temporarily unavailable or requires custom SMTP configuration in Supabase. Please contact your administrator.')
+            } else if (msg.toLowerCase().includes('rate limit') || msg.toLowerCase().includes('too many requests')) {
+                setError('Too many attempts. Please wait a minute before requesting another reset link.')
+            } else {
+                setError(msg || 'Failed to send reset email. Please try again.')
+            }
+
+            // Set 30s cooldown to prevent spamming
+            setCooldown(30)
+            const interval = setInterval(() => {
+                setCooldown((prev) => {
+                    if (prev <= 1) {
+                        clearInterval(interval)
+                        return 0
+                    }
+                    return prev - 1
+                })
+            }, 1000)
         } finally {
             setLoading(false)
         }
@@ -98,10 +121,10 @@ export default function ForgotPassword() {
 
                     <button
                         type="submit"
-                        disabled={loading}
+                        disabled={loading || cooldown > 0}
                         className="w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                     >
-                        {loading ? 'Sending...' : 'Send Reset Link'}
+                        {loading ? 'Sending...' : cooldown > 0 ? `Wait ${cooldown}s to retry` : 'Send Reset Link'}
                     </button>
                 </form>
 

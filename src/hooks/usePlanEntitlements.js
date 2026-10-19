@@ -4,10 +4,10 @@ import { planEntitlementService } from '../services/planEntitlementService'
 import { useCompany } from '../context/CompanyContext'
 import { useAuth } from '../context/AuthContext'
 
-export const usePlanEntitlements = () => {
+export const usePlanEntitlements = (options = {}) => {
     const { activeCompanyId } = useCompany()
     const { user, isAdmin, profileData } = useAuth()
-    const enabled = Boolean(user && isAdmin && activeCompanyId)
+    const enabled = Boolean(user && isAdmin && activeCompanyId && options.enabled !== false)
 
     const load = useCallback(async () => {
         if (!enabled) return null

@@ -48,6 +48,7 @@ create or replace function public.anonymize_employee_profile(p_employee_id uuid)
 returns void
 language plpgsql
 security definer -- Runs with elevated privileges to bypass standard employee updates restrictions
+set search_path = public, pg_temp
 as $$
 declare
   v_caller_role text;

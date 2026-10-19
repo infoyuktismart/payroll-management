@@ -38,17 +38,17 @@ export const enterpriseAdminService = {
         })
     },
 
-    async getSubscriptionDashboard() {
+    async getSubscriptionDashboard(activeCompanyId) {
         return withRetry(async () => {
-            const companyId = getActiveCompanyId()
+            const companyId = activeCompanyId || getActiveCompanyId()
             const [plansRes, subscription, usageRes, companiesRes, employeesRes, branchesRes] = await Promise.all([
                 emptyOnMissing(supabase.from('subscription_plans').select('*').order('sort_order')),
                 singleOrNullOnMissing(applyCompanyFilter(supabase
                     .from('company_subscriptions')
-                    .select('*, plan:subscription_plans(*)')).maybeSingle()),
-                emptyOnMissing(applyCompanyFilter(supabase.from('subscription_usage_counters').select('*').order('metric_key'))),
+                    .select('*, plan:subscription_plans(*)')).maybeSingle(), activeCompanyId),
+                emptyOnMissing(applyCompanyFilter(supabase.from('subscription_usage_counters').select('*').order('metric_key'), activeCompanyId)),
                 emptyOnMissing(supabase.from('companies').select('id', { count: 'exact', head: true })),
-                emptyOnMissing(applyCompanyFilter(supabase.from('employees').select('id', { count: 'exact', head: true }))),
+                emptyOnMissing(applyCompanyFilter(supabase.from('employees').select('id', { count: 'exact', head: true }), activeCompanyId)),
                 emptyOnMissing(companyId
                     ? supabase.from('branches').select('id', { count: 'exact', head: true }).eq('company_id', companyId)
                     : supabase.from('branches').select('id', { count: 'exact', head: true }))
@@ -67,13 +67,13 @@ export const enterpriseAdminService = {
         })
     },
 
-    async updateCompanySubscription(payload) {
+    async updateCompanySubscription(payload, activeCompanyId) {
         return withRetry(async () => {
-            const companyId = getActiveCompanyId()
+            const companyId = activeCompanyId || getActiveCompanyId()
             const scoped = withCompanyScope({
                 ...payload,
                 company_id: payload.company_id || companyId
-            })
+            }, companyId)
             const { data, error } = await supabase
                 .from('company_subscriptions')
                 .upsert(scoped, { onConflict: 'company_id' })
@@ -84,9 +84,9 @@ export const enterpriseAdminService = {
         })
     },
 
-    async refreshUsageCounters() {
+    async refreshUsageCounters(activeCompanyId) {
         return withRetry(async () => {
-            const companyId = getActiveCompanyId()
+            const companyId = activeCompanyId || getActiveCompanyId()
             if (!companyId) return []
 
             const [employeesRes, branchesRes, subscription] = await Promise.all([

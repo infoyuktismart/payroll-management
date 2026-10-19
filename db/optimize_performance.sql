@@ -17,3 +17,12 @@ CREATE INDEX IF NOT EXISTS idx_payroll_runs_month_year ON payroll_runs(month_yea
 -- 5. Generated Reports: Critical for dashboard "Pending Compliance" stats
 -- Fixed: Removed reference to 'generated_by' which doesn't exist. Using report_type + status.
 CREATE INDEX IF NOT EXISTS idx_reports_type_status ON generated_reports(report_type, status);
+
+-- 6. Foreign Key Indices: Critical for employee relationship lookups and RLS joins
+CREATE INDEX IF NOT EXISTS idx_employee_loans_employee_id ON public.employee_loans(employee_id);
+CREATE INDEX IF NOT EXISTS idx_reimbursements_employee_id ON public.reimbursements(employee_id);
+CREATE INDEX IF NOT EXISTS idx_exits_employee_id ON public.exits(employee_id);
+CREATE INDEX IF NOT EXISTS idx_employee_nominees_employee_id ON public.employee_nominees(employee_id);
+CREATE INDEX IF NOT EXISTS idx_lta_claims_employee_id ON public.lta_claims(employee_id);
+CREATE INDEX IF NOT EXISTS idx_privacy_consents_employee_id ON public.privacy_consents(employee_id);
+

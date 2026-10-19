@@ -9,7 +9,6 @@
  * Part B: Computation of income & tax (breakup of salary)
  */
 
-import jsPDF from 'jspdf'
 import { calculateAnnualTax, TAX_REGIMES } from './taxUtils'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -56,9 +55,9 @@ const sectionTitle = (doc, title, y) => {
  * @param {Array}  params.payrollRuns      - Monthly payroll runs for the financial year
  * @param {string} params.financialYear    - e.g. "2024-25"
  * @param {boolean} [params.download=true] - Auto-download the PDF
- * @returns {jsPDF} The jsPDF document instance
+ * @returns {Promise<object>} The jsPDF document instance
  */
-export const generateForm16PDF = ({
+export const generateForm16PDF = async ({
     employee,
     company,
     declaration = {},
@@ -66,7 +65,8 @@ export const generateForm16PDF = ({
     financialYear = '2024-25',
     download = true
 }) => {
-    const doc = new jsPDF({ unit: 'mm', format: 'a4' })
+    const { default: jsPDFLib } = await import('jspdf')
+    const doc = new jsPDFLib({ unit: 'mm', format: 'a4' })
     const pageW = 210
     const lm = 15  // left margin
     const rm = 195 // right margin (x for right-aligned values)

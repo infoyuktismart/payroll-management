@@ -18,6 +18,7 @@ create or replace function public.normalize_leave_type(value text)
 returns text
 language sql
 immutable
+set search_path = public, pg_temp
 as $$
   select lower(regexp_replace(coalesce(value, ''), '[^a-z0-9]+', '', 'g'));
 $$;
@@ -26,6 +27,7 @@ create or replace function public.calculate_leave_days(start_date date, end_date
 returns numeric
 language sql
 stable
+set search_path = public, pg_temp
 as $$
   select coalesce(count(*)::numeric, 0)
   from generate_series(start_date, end_date, interval '1 day') as day(value)
@@ -41,6 +43,7 @@ create or replace function public.resolve_leave_policy_name(requested_type text)
 returns text
 language sql
 stable
+set search_path = public, pg_temp
 as $$
   select coalesce(
     (

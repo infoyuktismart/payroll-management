@@ -58,3 +58,55 @@ export const useCreatePayrollItems = () => {
         }
     })
 }
+
+export const usePayrollHistoryQuery = () => {
+    return useQuery({
+        queryKey: ['payrollHistory'],
+        queryFn: async () => {
+            try {
+                return await payrollService.getPayrollRuns()
+            } catch (error) {
+                toast.error('Failed to load payroll history: ' + error.message)
+                throw error
+            }
+        }
+    })
+}
+
+export const useDeliveryLogsQuery = (activeCompanyId) => {
+    return useQuery({
+        queryKey: ['deliveryLogs', activeCompanyId],
+        queryFn: async () => {
+            try {
+                return await payrollService.getDeliveryLogs(activeCompanyId)
+            } catch (error) {
+                toast.error('Failed to load delivery logs: ' + error.message)
+                throw error
+            }
+        },
+        enabled: activeCompanyId !== undefined
+    })
+}
+
+export const useReversePayrollMutation = () => {
+    const queryClient = useQueryClient()
+    return useMutation({
+        mutationFn: ({ runId, userId }) => payrollService.reversePayrollRun(runId, userId),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['payrollHistory'] })
+            queryClient.invalidateQueries({ queryKey: ['payrollRuns'] })
+        }
+    })
+}
+
+export const useFinalizePayrollMutation = () => {
+    const queryClient = useQueryClient()
+    return useMutation({
+        mutationFn: (params) => payrollService.finalizePayrollRun(params),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['payrollHistory'] })
+            queryClient.invalidateQueries({ queryKey: ['payrollRuns'] })
+        }
+    })
+}
+

@@ -2,6 +2,11 @@ import { supabase } from '../lib/supabase'
 import { withRetry } from '../lib/withRetry'
 import { applyCompanyFilter, getActiveCompanyId, withCompanyScope } from './tenantScope'
 
+// Read queries use the decryption view so PAN / Aadhaar / bank account arrive decrypted.
+// Write queries (insert, update, delete) use the base table; the DB trigger encrypts on write.
+// Toggle this constant back to 'employees' to disable decrypted reads (e.g., before migration runs).
+const READABLE_VIEW = 'employees_readable'
+
 export const employeeService = {
     /**
      * Get employees.
@@ -13,8 +18,9 @@ export const employeeService = {
     async getEmployees({ page = 0, pageSize = 50 } = {}) {
         return withRetry(async () => {
             let query = supabase
-                .from('employees')
+                .from(READABLE_VIEW)
                 .select('*', { count: 'exact' })
+                .eq('is_deleted', false)
                 .order('joining_date', { ascending: true })
                 .order('created_at', { ascending: true })
             query = applyCompanyFilter(query)
@@ -43,9 +49,10 @@ export const employeeService = {
     async getEmployeeById(id) {
         return withRetry(async () => {
             let query = supabase
-                .from('employees')
+                .from(READABLE_VIEW)
                 .select('*')
                 .eq('id', id)
+                .eq('is_deleted', false)
             query = applyCompanyFilter(query)
             const { data, error } = await query
                 .single()
@@ -62,9 +69,10 @@ export const employeeService = {
     async getEmployeeByEmail(email) {
         return withRetry(async () => {
             let query = supabase
-                .from('employees')
+                .from(READABLE_VIEW)
                 .select('*')
                 .eq('email', email)
+                .eq('is_deleted', false)
             query = applyCompanyFilter(query)
             const { data, error } = await query
                 .maybeSingle()
@@ -156,12 +164,158 @@ export const employeeService = {
             const companyId = getActiveCompanyId()
             let query = supabase
                 .from('employees')
-                .delete()
+                .update({ is_deleted: true, deleted_at: new Date().toISOString() })
                 .eq('id', id)
             if (companyId) query = query.eq('company_id', companyId)
             const { error } = await query
             if (error) throw error
             return true
+        })
+    },
+
+    /**
+     * Get job grades for a company.
+     * @param {string} activeCompanyId - Active company UUID
+     * @returns {Promise<Array>} List of job grades
+     */
+    async getJobGrades(activeCompanyId) {
+        return withRetry(async () => {
+            let query = supabase
+                .from('job_grades')
+                .select('*')
+                .order('min_salary', { ascending: true })
+
+            if (activeCompanyId) query = query.eq('company_id', activeCompanyId)
+
+            const { data, error } = await query
+            if (error) {
+                if (error.code === '42P01') {
+                    return [
+                        { id: 'default-l1', grade_code: 'L1', name: 'L1 - Junior Associate', min_salary: 10000, max_salary: 40000 },
+                        { id: 'default-l2', grade_code: 'L2', name: 'L2 - Associate', min_salary: 40000, max_salary: 80000 },
+                        { id: 'default-l3', grade_code: 'L3', name: 'L3 - Senior Associate', min_salary: 80000, max_salary: 150000 },
+                        { id: 'default-l4', grade_code: 'L4', name: 'L4 - Lead', min_salary: 150000, max_salary: 300000 },
+                        { id: 'default-l5', grade_code: 'L5', name: 'L5 - Principal', min_salary: 300000, max_salary: 800000 }
+                    ]
+                }
+                throw error
+            }
+            return data?.length ? data : [
+                { id: 'default-l1', grade_code: 'L1', name: 'L1 - Junior Associate', min_salary: 10000, max_salary: 40000 },
+                { id: 'default-l2', grade_code: 'L2', name: 'L2 - Associate', min_salary: 40000, max_salary: 80000 },
+                { id: 'default-l3', grade_code: 'L3', name: 'L3 - Senior Associate', min_salary: 80000, max_salary: 150000 },
+                { id: 'default-l4', grade_code: 'L4', name: 'L4 - Lead', min_salary: 150000, max_salary: 300000 },
+                { id: 'default-l5', grade_code: 'L5', name: 'L5 - Principal', min_salary: 300000, max_salary: 800000 }
+            ]
+        })
+    },
+
+    /**
+     * Get nominees for an employee.
+     * @param {string} employeeId - Employee UUID
+     * @returns {Promise<Array>} List of nominees
+     */
+    async getNominees(employeeId) {
+        return withRetry(async () => {
+            const { data, error } = await supabase
+                .from('employee_nominees')
+                .select('*')
+                .eq('employee_id', employeeId)
+                .order('created_at', { ascending: true })
+            if (error) throw error
+            return data || []
+        })
+    },
+
+    /**
+     * Create a nominee.
+     * @param {Object} payload - Nominee data
+     * @returns {Promise<Object>} Created nominee record
+     */
+    async createNominee(payload) {
+        return withRetry(async () => {
+            const { data, error } = await supabase
+                .from('employee_nominees')
+                .insert([payload])
+                .select()
+                .single()
+            if (error) throw error
+            return data
+        })
+    },
+
+    /**
+     * Update a nominee.
+     * @param {Object} params
+     * @param {string} params.id - Nominee UUID
+     * @param {Object} params.payload - Nominee data
+     * @returns {Promise<Object>} Updated nominee record
+     */
+    async updateNominee({ id, payload }) {
+        return withRetry(async () => {
+            const { data, error } = await supabase
+                .from('employee_nominees')
+                .update(payload)
+                .eq('id', id)
+                .select()
+                .single()
+            if (error) throw error
+            return data
+        })
+    },
+
+    /**
+     * Delete a nominee.
+     * @param {string} id - Nominee UUID
+     * @returns {Promise<boolean>} True if successful
+     */
+    async deleteNominee(id) {
+        return withRetry(async () => {
+            const { error } = await supabase
+                .from('employee_nominees')
+                .delete()
+                .eq('id', id)
+            if (error) throw error
+            return true
+        })
+    },
+
+    /**
+     * Upload employee profile photo to storage.
+     * @param {string} employeeId - ID or UUID
+     * @param {File} file - File object
+     * @returns {Promise<string>} Public URL
+     */
+    async uploadProfilePhoto(employeeId, file) {
+        return withRetry(async () => {
+            const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+            const path = `${employeeId}/${Date.now()}_${safeName}`
+            const { error } = await supabase.storage
+                .from('employee-profiles')
+                .upload(path, file, {
+                    contentType: file.type,
+                    upsert: false
+                })
+            if (error) throw error
+            const { data } = supabase.storage.from('employee-profiles').getPublicUrl(path)
+            return data?.publicUrl || ''
+        })
+    },
+
+    /**
+     * Create a signed URL for a document from employee-documents bucket.
+     * @param {string} storagePath - Path to the file in storage
+     * @param {number} expiresInSeconds - Seconds before link expires
+     * @param {Object} [options] - Additional download options
+     * @returns {Promise<string>} Signed URL
+     */
+    async getDocumentSignedUrl(storagePath, expiresInSeconds = 120, options = {}) {
+        return withRetry(async () => {
+            const { data, error } = await supabase.storage
+                .from('employee-documents')
+                .createSignedUrl(storagePath, expiresInSeconds, options)
+            if (error) throw error
+            return data?.signedUrl || null
         })
     }
 }

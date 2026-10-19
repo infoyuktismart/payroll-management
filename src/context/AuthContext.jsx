@@ -10,7 +10,7 @@ export const useAuth = () => useContext(AuthContext)
 
 const TWO_FACTOR_SESSION_KEY = 'payroll_2fa_verified_user'
 const AUTH_LAST_ACTIVITY_KEY = 'payroll_auth_last_activity_at'
-const AUTH_BOOT_TIMEOUT_MS = 10_000
+const AUTH_BOOT_TIMEOUT_MS = 3_500
 const AUTH_IDLE_TIMEOUT_MS = 60 * 60 * 1000
 const ACTIVITY_WRITE_THROTTLE_MS = 30_000
 
@@ -126,7 +126,16 @@ const getBrowserInfo = () => {
 export const AuthProvider = ({ children }) => {
     const [user, setUser] = useState(null)
     const [session, setSession] = useState(null)
-    const [loading, setLoading] = useState(true)
+    const [loading, setLoading] = useState(() => {
+        if (typeof window === 'undefined') return true
+        try {
+            const keys = Object.keys(localStorage)
+            const hasToken = keys.some(key => key.startsWith('sb-') && key.endsWith('-auth-token'))
+            return hasToken
+        } catch (err) {
+            return true
+        }
+    })
     const userRef = useRef(null)
     const sessionTokenRef = useRef(null)
     const lastRoleCheckRef = useRef({ userId: null, at: 0 })
@@ -520,11 +529,26 @@ export const AuthProvider = ({ children }) => {
         }
 
         const recoverAuthCheck = (error, fallbackSession = null) => {
-            if (fallbackSession?.user && isTimeoutError(error)) {
-                devLog('AuthContext auth check timed out. Keeping existing cached session:', error?.message)
-                setSession(fallbackSession)
-                setUser(fallbackSession.user)
-                recordActivity(true)
+            if (isTimeoutError(error)) {
+                devLog(
+                    fallbackSession?.user
+                        ? 'AuthContext auth check timed out. Keeping existing cached session:'
+                        : 'AuthContext auth check timed out. Continuing signed out until Supabase emits a session:',
+                    error?.message
+                )
+                if (isMounted) {
+                    setBootError(null)
+                    if (fallbackSession?.user) {
+                        setSession(fallbackSession)
+                        setUser(fallbackSession.user)
+                        recordActivity(true)
+                    } else {
+                        setUser(null)
+                        setSession(null)
+                        setIsAdmin(false)
+                        setProfileData(null)
+                    }
+                }
                 finishLoading()
                 return
             }
@@ -762,8 +786,6 @@ export const AuthProvider = ({ children }) => {
         <AuthContext.Provider value={value}>
             {bootError ? (
                 <AuthBootError error={bootError} onRetry={() => window.location.reload()} />
-            ) : loading ? (
-                <AuthBootScreen message="Checking secure session..." />
             ) : children}
         </AuthContext.Provider>
     )

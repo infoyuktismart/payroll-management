@@ -1,72 +1,42 @@
-import { useState, useEffect } from 'react'
+import { useState, useMemo } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
-import { employeeService } from '../services/employeeService'
-import { attendanceService } from '../services/attendanceService'
 import { format } from 'date-fns'
 import { Plus, Check, X } from 'lucide-react'
 import Modal from '../components/ui/Modal'
 import clsx from 'clsx'
-import { logger } from '../lib/devLogger'
+import { useAllEmployees, useEmployeeByEmail } from '../hooks/useEmployees'
+import { useOvertimeRequests, useCreateOvertimeRequest, useUpdateOvertimeStatus } from '../hooks/useOvertimeData'
 
 export default function Overtime() {
     const { user, isAdmin } = useAuth()
     const toast = useToast()
-    const [requests, setRequests] = useState([])
-    const [employees, setEmployees] = useState({})
-    const [loading, setLoading] = useState(true)
     const [isModalOpen, setIsModalOpen] = useState(false)
     const [formData, setFormData] = useState({
         date: '',
         hours: '',
         reason: ''
     })
-    const [currentEmployee, setCurrentEmployee] = useState(null)
 
-    useEffect(() => {
-        fetchCurrentEmployee()
-         
-    }, [user])
+    // Fetch current employee profile using query cache
+    const { data: currentEmployee = null, isLoading: loadingEmployee } = useEmployeeByEmail(user?.email)
 
-    useEffect(() => {
-        if (currentEmployee || isAdmin) {
-            fetchRequests()
-            if (isAdmin) fetchEmployeesMap()
-        }
-         
-    }, [currentEmployee, isAdmin])
+    // Fetch overtime requests using query hook
+    const { data: requests = [], isLoading: requestsLoading } = useOvertimeRequests({
+        employeeId: currentEmployee?.id,
+        isAdmin
+    })
 
-    const fetchCurrentEmployee = async () => {
-        if (!user) return
-        try {
-            const data = await employeeService.getEmployeeByEmail(user.email)
-            setCurrentEmployee(data)
-        } catch (error) {
-            logger.error('Error fetching current employee:', error)
-        }
-    }
+    // Fetch all employees for mapping employee IDs to names in admin view
+    const { data: allEmployees = [] } = useAllEmployees()
+    const employees = useMemo(() => {
+        const map = {}
+        allEmployees.forEach(e => map[e.id] = `${e.first_name} ${e.last_name}`)
+        return map
+    }, [allEmployees])
 
-    const fetchEmployeesMap = async () => {
-        try {
-            const data = await employeeService.getAllEmployees()
-            const map = {}
-            data?.forEach(e => map[e.id] = `${e.first_name} ${e.last_name}`)
-            setEmployees(map)
-        } catch (error) {
-            logger.error('Error fetching employees map:', error)
-        }
-    }
-
-    const fetchRequests = async () => {
-        try {
-            const data = await attendanceService.getOvertimeRequests({ employeeId: currentEmployee?.id, isAdmin })
-            setRequests(data)
-        } catch (error) {
-            logger.error('Error fetching overtime:', error)
-        } finally {
-            setLoading(false)
-        }
-    }
+    const createOvertimeMutation = useCreateOvertimeRequest()
+    const updateOvertimeMutation = useUpdateOvertimeStatus()
 
     const handleCreate = async (e) => {
         e.preventDefault()
@@ -76,24 +46,22 @@ export default function Overtime() {
         }
 
         try {
-            await attendanceService.createOvertimeRequest({
+            await createOvertimeMutation.mutateAsync({
                 ...formData,
                 employee_id: currentEmployee.id
             })
             setIsModalOpen(false)
-            fetchRequests()
             setFormData({ date: '', hours: '', reason: '' })
         } catch (error) {
-            toast.error(error.message)
+            // error toast is handled by query mutation hook
         }
     }
 
     const handleStatusChange = async (id, status) => {
         try {
-            await attendanceService.updateOvertimeStatus({ id, status })
-            fetchRequests()
+            await updateOvertimeMutation.mutateAsync({ id, status })
         } catch (error) {
-            toast.error(error.message)
+            // error toast is handled by query mutation hook
         }
     }
 
@@ -104,6 +72,8 @@ export default function Overtime() {
             default: return 'bg-yellow-100 text-yellow-800'
         }
     }
+
+    const loading = loadingEmployee || requestsLoading || createOvertimeMutation.isPending || updateOvertimeMutation.isPending
 
     return (
         <div className="space-y-6">

@@ -10,7 +10,7 @@ const viewOrEmpty = async (query, missingCodes = ['42P01', '42703']) => {
 }
 
 export const analyticsService = {
-    async getAnalyticsDashboard(startDate, endDate) {
+    async getAnalyticsDashboard(startDate, endDate, activeCompanyId) {
         return withRetry(async () => {
             await planEntitlementService.assertFeature('analytics')
             let trendQuery = supabase.from('v_payroll_monthly_trend').select('*')
@@ -28,9 +28,9 @@ export const analyticsService = {
                 attendanceQuery = attendanceQuery.lte('month_start', endDate)
             }
 
-            trendQuery = applyCompanyFilter(trendQuery).order('month_start', { ascending: true })
-            headcountQuery = applyCompanyFilter(headcountQuery).order('month_start', { ascending: true })
-            attendanceQuery = applyCompanyFilter(attendanceQuery).order('month_start', { ascending: true })
+            trendQuery = applyCompanyFilter(trendQuery, activeCompanyId).order('month_start', { ascending: true })
+            headcountQuery = applyCompanyFilter(headcountQuery, activeCompanyId).order('month_start', { ascending: true })
+            attendanceQuery = applyCompanyFilter(attendanceQuery, activeCompanyId).order('month_start', { ascending: true })
 
             const [
                 payrollTrend,
@@ -40,10 +40,10 @@ export const analyticsService = {
                 complianceRows
             ] = await Promise.all([
                 viewOrEmpty(trendQuery),
-                viewOrEmpty(applyCompanyFilter(supabase.from('v_department_headcount').select('*')).order('active_count', { ascending: false })),
+                viewOrEmpty(applyCompanyFilter(supabase.from('v_department_headcount').select('*'), activeCompanyId).order('active_count', { ascending: false })),
                 viewOrEmpty(headcountQuery),
                 viewOrEmpty(attendanceQuery),
-                viewOrEmpty(applyCompanyFilter(supabase.from('v_compliance_summary').select('*')))
+                viewOrEmpty(applyCompanyFilter(supabase.from('v_compliance_summary').select('*'), activeCompanyId))
             ])
 
             // Calculate MoM payroll cost shift

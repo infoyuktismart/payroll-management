@@ -64,7 +64,9 @@ export default function CompanySwitcher() {
                                     type="button"
                                     onClick={() => {
                                         switchCompany(item.id)
-                                        queryClient.invalidateQueries()
+                                        queryClient.invalidateQueries({ queryKey: ['salaryStructurePage'] })
+                                        queryClient.invalidateQueries({ queryKey: ['subscriptionDashboard'] })
+                                        queryClient.invalidateQueries({ queryKey: ['planEntitlements'] })
                                         setOpen(false)
                                     }}
                                     className={`w-full rounded-xl px-3 py-3 text-left transition flex items-start gap-3 ${selected ? 'bg-blue-50 text-blue-700' : 'hover:bg-slate-50 text-slate-700'}`}

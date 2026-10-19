@@ -1,39 +1,53 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { CreditCard, Crown, RefreshCw, Save, Users } from 'lucide-react'
 import { enterpriseAdminService } from '../services/enterpriseAdminService'
 import { auditService } from '../lib/auditService'
 import { formatCurrency } from '../lib/payrollUtils'
 import { useToast } from '../context/ToastContext'
+import { useCompany } from '../context/CompanyContext'
 
 export default function SubscriptionManagement() {
     const toast = useToast()
-    const [loading, setLoading] = useState(true)
-    const [saving, setSaving] = useState(false)
-    const [data, setData] = useState({ plans: [], subscription: null, usageCounters: [], liveUsage: {} })
+    const queryClient = useQueryClient()
+    const { activeCompanyId, selectedBranch } = useCompany()
     const [form, setForm] = useState({ plan_id: '', status: 'trialing', billing_cycle: 'monthly', billing_model: 'flat' })
 
-    const load = async () => {
-        setLoading(true)
-        try {
-            const dashboard = await enterpriseAdminService.getSubscriptionDashboard()
-            setData(dashboard)
+    const subscriptionQueryKey = useMemo(() => [
+        'subscriptionDashboard',
+        activeCompanyId || 'all-companies',
+        selectedBranch || 'all-branches'
+    ], [activeCompanyId, selectedBranch])
+
+    const subscriptionQuery = useQuery({
+        queryKey: subscriptionQueryKey,
+        queryFn: async () => {
+            try {
+                return await enterpriseAdminService.getSubscriptionDashboard(activeCompanyId)
+            } catch (error) {
+                toast.error(`Failed to load subscription data: ${error.message}`)
+                throw error
+            }
+        },
+        staleTime: 5 * 60 * 1000,
+        gcTime: 30 * 60 * 1000,
+        refetchOnWindowFocus: false,
+    })
+
+    const data = subscriptionQuery.data || { plans: [], subscription: null, usageCounters: [], liveUsage: {} }
+    const loading = subscriptionQuery.isLoading
+
+    useEffect(() => {
+        if (subscriptionQuery.data) {
+            const dashboard = subscriptionQuery.data
             setForm({
                 plan_id: dashboard.subscription?.plan_id || dashboard.plans[0]?.id || '',
                 status: dashboard.subscription?.status || 'trialing',
                 billing_cycle: dashboard.subscription?.billing_cycle || 'monthly',
                 billing_model: dashboard.subscription?.billing_model || 'flat'
             })
-        } catch (error) {
-            toast.error(`Failed to load subscription data: ${error.message}`)
-        } finally {
-            setLoading(false)
         }
-    }
-
-    useEffect(() => {
-        load()
-         
-    }, [])
+    }, [subscriptionQuery.data])
 
     const selectedPlan = useMemo(() => data.plans.find(plan => plan.id === form.plan_id), [data.plans, form.plan_id])
     const usage = [
@@ -42,15 +56,9 @@ export default function SubscriptionManagement() {
         { key: 'companies', label: 'Companies', value: data.liveUsage.companies || 0, limit: selectedPlan?.max_companies }
     ]
 
-    const saveSubscription = async () => {
-        if (!form.plan_id) {
-            toast.warning('Select a plan first.')
-            return
-        }
-
-        setSaving(true)
-        try {
-            const saved = await enterpriseAdminService.updateCompanySubscription(form)
+    const updateSubscriptionMutation = useMutation({
+        mutationFn: async (formData) => {
+            const saved = await enterpriseAdminService.updateCompanySubscription(formData, activeCompanyId)
             await auditService.logWrite({
                 tableName: 'company_subscriptions',
                 recordId: saved.id,
@@ -58,24 +66,41 @@ export default function SubscriptionManagement() {
                 before: data.subscription,
                 after: saved
             })
+            return saved
+        },
+        onSuccess: () => {
             toast.success('Subscription updated.')
-            await load()
-        } catch (error) {
+            queryClient.invalidateQueries({ queryKey: ['subscriptionDashboard'] })
+        },
+        onError: (error) => {
             toast.error(`Failed to save subscription: ${error.message}`)
-        } finally {
-            setSaving(false)
         }
+    })
+
+    const saveSubscription = () => {
+        if (!form.plan_id) {
+            toast.warning('Select a plan first.')
+            return
+        }
+        updateSubscriptionMutation.mutate(form)
     }
 
-    const refreshUsage = async () => {
-        try {
-            await enterpriseAdminService.refreshUsageCounters()
+    const refreshUsageMutation = useMutation({
+        mutationFn: () => enterpriseAdminService.refreshUsageCounters(activeCompanyId),
+        onSuccess: () => {
             toast.success('Usage counters refreshed.')
-            await load()
-        } catch (error) {
+            queryClient.invalidateQueries({ queryKey: ['subscriptionDashboard'] })
+        },
+        onError: (error) => {
             toast.error(`Failed to refresh usage: ${error.message}`)
         }
+    })
+
+    const refreshUsage = () => {
+        refreshUsageMutation.mutate()
     }
+
+    const saving = updateSubscriptionMutation.isPending || refreshUsageMutation.isPending
 
     return (
         <div className="space-y-6">
@@ -125,7 +150,7 @@ export default function SubscriptionManagement() {
                     <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
                         <h2 className="font-black text-slate-900 mb-4">Usage Counters</h2>
                         <div className="space-y-4">
-                            {usage.map(item => <UsageBar key={item.key} {...item} />)}
+                            {usage.map(({ key, ...props }) => <UsageBar key={key} {...props} />)}
                         </div>
                     </div>
                 </div>

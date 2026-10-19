@@ -18,6 +18,7 @@ export const reimbursementService = {
                     *,
                     employee:employees!employee_id(first_name, last_name, employee_id, designation, department)
                 `, { count: 'exact' })
+                .eq('is_deleted', false)
                 .order('created_at', { ascending: false })
             query = applyCompanyFilter(query)
             const { data, error, count } = await query.range(page * pageSize, (page + 1) * pageSize - 1)
@@ -54,11 +55,16 @@ export const reimbursementService = {
     async updateClaimStatus({ id, status, reviewerUserId }) {
         return withRetry(async () => {
             let reviewerEmployeeId = null
-            if (reviewerUserId) {
+            let resolvedUid = reviewerUserId
+            if (!resolvedUid) {
+                const { data: { user } } = await supabase.auth.getUser()
+                if (user) resolvedUid = user.id
+            }
+            if (resolvedUid) {
                 let reviewerQuery = supabase
                     .from('employees')
                     .select('id')
-                    .eq('user_id', reviewerUserId)
+                    .eq('user_id', resolvedUid)
                 reviewerQuery = applyCompanyFilter(reviewerQuery)
                 const { data: reviewer, error: revErr } = await reviewerQuery
                     .maybeSingle()
@@ -86,5 +92,63 @@ export const reimbursementService = {
             if (error) throw error
             return data
         })
+    },
+
+    /**
+     * Upload reimbursement receipt to Supabase Storage.
+     * @param {Object} params - Parameter object
+     * @param {string} params.employeeId - Employee ID
+     * @param {File} params.file - File object to upload
+     * @returns {Promise<{publicUrl: string, fileName: string}>} File URL and name info
+     */
+    async uploadReceipt({ employeeId, file }) {
+        return withRetry(async () => {
+            const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+            const storagePath = `reimbursements/${employeeId}/${Date.now()}_${safeFileName}`
+
+            let uploadResult = await supabase
+                .storage
+                .from('employee-documents')
+                .upload(storagePath, file, {
+                    contentType: file.type,
+                    upsert: false
+                })
+
+            if (uploadResult.error && (
+                uploadResult.error.message?.toLowerCase().includes('bucket not found') ||
+                uploadResult.error.message?.toLowerCase().includes('does not exist')
+            )) {
+                const { error: createError } = await supabase.storage.createBucket('employee-documents', {
+                    public: true
+                })
+
+                if (!createError) {
+                    uploadResult = await supabase
+                        .storage
+                        .from('employee-documents')
+                        .upload(storagePath, file, {
+                            contentType: file.type,
+                            upsert: false
+                        })
+                }
+            }
+
+            if (uploadResult.error) throw uploadResult.error
+
+            const { data: publicData } = supabase
+                .storage
+                .from('employee-documents')
+                .getPublicUrl(storagePath)
+
+            if (!publicData?.publicUrl) {
+                throw new Error('Failed to retrieve file URL.')
+            }
+
+            return {
+                publicUrl: publicData.publicUrl,
+                fileName: file.name
+            }
+        })
     }
 }
+

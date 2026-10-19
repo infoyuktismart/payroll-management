@@ -59,3 +59,24 @@ export const withCompanyScopeList = (items, companyId = getActiveCompanyId()) =>
     return (items || []).map(item => withCompanyScope(item, companyId))
 }
 
+/**
+ * Syncs the active company ID to the PostgreSQL session config via an RPC call.
+ * This sets `app.active_company_id` server-side so that RLS helper functions
+ * like `is_active_company_member()` and `get_active_company_id()` can validate
+ * tenant scoping at the database level — not just from client-supplied query filters.
+ *
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase - Supabase client
+ * @param {string|null} companyId - UUID of the company to activate in the session
+ */
+export const syncActiveCompanyToSession = async (supabase, companyId) => {
+    if (!companyId) return
+    try {
+        const { error } = await supabase.rpc('set_active_company', { p_company_id: companyId })
+        if (error) {
+            console.warn('[TenantScope] Failed to sync active company to DB session:', error.message)
+        }
+    } catch (err) {
+        // Non-fatal: existing RLS policies still protect data via auth.uid()
+        console.warn('[TenantScope] set_active_company RPC unavailable:', err.message)
+    }
+}

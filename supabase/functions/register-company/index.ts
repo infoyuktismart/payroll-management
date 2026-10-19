@@ -93,6 +93,11 @@ serve(async (req: Request) => {
         autoRefreshToken: false,
         persistSession: false,
       },
+      global: {
+        headers: {
+          Authorization: `Bearer ${serviceRoleKey}`,
+        },
+      },
     })
 
     const { data: duplicateCompany, error: companyCheckError } = await serviceClient

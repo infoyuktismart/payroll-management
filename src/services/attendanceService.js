@@ -426,5 +426,286 @@ export const attendanceService = {
         } catch (err) {
             console.error('Error calculating and crediting comp off:', err)
         }
+    },
+
+    /**
+     * Get attendance policies.
+     * @returns {Promise<any>} A promise that resolves with the result
+     */
+    async getAttendancePolicies() {
+        return withRetry(async () => {
+            const companyId = getActiveCompanyId()
+            let query = supabase.from('attendance_policies').select('*')
+            if (companyId) query = query.eq('company_id', companyId)
+            const { data, error } = await query.order('name')
+            if (error) throw error
+            return data
+        })
+    },
+
+    /**
+     * Create attendance policy.
+     * @param {any} policyData - The policyData parameter
+     * @returns {Promise<any>} A promise that resolves with the result
+     */
+    async createAttendancePolicy(policyData) {
+        return withRetry(async () => {
+            const { data, error } = await supabase
+                .from('attendance_policies')
+                .insert([withCompanyScope(policyData)])
+                .select()
+                .single()
+            if (error) throw error
+            return data
+        })
+    },
+
+    /**
+     * Get attendance stats.
+     * @param {Object} params - The parameter object
+     * @param {any} params.dateFilter - The dateFilter parameter
+     * @param {any} params.holidays - The holidays parameter
+     * @returns {Promise<any>} A promise that resolves with the result
+     */
+    async getAttendanceStats({ dateFilter, holidays }) {
+        return withRetry(async () => {
+            if (!dateFilter) return { total: 0, present: 0, absent: 0, onLeave: 0, late: 0, early: 0, rate: 0 }
+
+            const [year, month] = dateFilter.split('-').map(Number);
+            const startOfMonth = `${dateFilter}-01`;
+            const lastDayDate = new Date(year, month, 0);
+            const endOfMonth = `${dateFilter}-${lastDayDate.getDate().toString().padStart(2, '0')}`;
+
+            const holidaysInMonth = (holidays || []).filter(h => h.date >= startOfMonth && h.date <= endOfMonth)
+
+            const [employeesRes, attendanceRes, leavesRes] = await Promise.all([
+                applyCompanyFilter(
+                    supabase
+                        .from('employees')
+                        .select('*', { count: 'exact', head: true }),
+                    getActiveCompanyId()
+                ).eq('status', 'active'),
+                applyCompanyFilter(
+                    supabase
+                        .from('attendance')
+                        .select('status, date'),
+                    getActiveCompanyId()
+                )
+                    .gte('date', startOfMonth)
+                    .lte('date', endOfMonth),
+                applyCompanyFilter(
+                    supabase
+                        .from('leaves')
+                        .select('start_date, end_date'),
+                    getActiveCompanyId()
+                )
+                    .eq('status', 'approved')
+                    .lte('start_date', endOfMonth)
+                    .gte('end_date', startOfMonth)
+            ])
+
+            if (attendanceRes.error) throw attendanceRes.error
+            if (leavesRes.error) throw leavesRes.error
+
+            const totalEmployees = employeesRes.count || 0
+            const attendanceData = attendanceRes.data || []
+            const leavesData = leavesRes.data || []
+
+            const presentRecordsTotal = attendanceData?.filter(a => a.status === 'present' || a.status === 'half_day').length || 0
+
+            const presentOnWorkable = attendanceData?.filter(a => {
+                const date = new Date(a.date)
+                const isSun = date.getDay() === 0
+                const isHol = holidaysInMonth.some(h => h.date === a.date)
+                return (a.status === 'present' || a.status === 'half_day') && !isSun && !isHol
+            }).length || 0
+
+            let totalOnLeaveDays = 0
+            leavesData?.forEach(leave => {
+                const leaveStart = new Date(leave.start_date);
+                const leaveEnd = new Date(leave.end_date);
+                const monthStart = new Date(startOfMonth);
+                const monthEnd = new Date(endOfMonth);
+
+                const start = new Date(Math.max(leaveStart, monthStart));
+                const end = new Date(Math.min(leaveEnd, monthEnd));
+
+                if (start <= end) {
+                    const diffTime = Math.abs(end - start);
+                    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+                    totalOnLeaveDays += diffDays;
+                }
+            })
+
+            let workableDaysCount = 0
+            const tempDate = new Date(startOfMonth);
+            const monthEndDate = new Date(endOfMonth);
+            while (tempDate <= monthEndDate) {
+                const dateStr = tempDate.toISOString().split('T')[0]
+                const isSunday = tempDate.getDay() === 0
+                const isHoliday = holidaysInMonth.some(h => h.date === dateStr)
+                if (!isSunday && !isHoliday) {
+                    workableDaysCount++
+                }
+                tempDate.setDate(tempDate.getDate() + 1)
+            }
+
+            const totalPossibleManDays = (totalEmployees || 0) * workableDaysCount
+            const totalAbsentManDays = Math.max(0, totalPossibleManDays - presentOnWorkable - totalOnLeaveDays)
+
+            const attendanceRate = totalPossibleManDays > 0
+                ? Math.round((presentOnWorkable / totalPossibleManDays) * 100)
+                : 0
+
+            return {
+                total: totalEmployees || 0,
+                present: presentRecordsTotal,
+                absent: totalAbsentManDays,
+                onLeave: totalOnLeaveDays,
+                late: 0,
+                early: 0,
+                rate: attendanceRate
+            }
+        })
+    },
+
+    /**
+     * Bulk upload attendance.
+     * @param {Object} params - The parameter object
+     * @param {any} params.data - The data parameter
+     * @param {any} params.activeCompanyId - The activeCompanyId parameter
+     * @returns {Promise<any>} A promise that resolves with the result
+     */
+    async bulkUploadAttendance({ data, activeCompanyId }) {
+        return withRetry(async () => {
+            const stats = { total: data.length, success: 0, failed: 0 }
+            const report = []
+
+            const { data: allEmployees, error: empErr } = await supabase.from('employees').select('id, employee_id')
+            if (empErr) throw empErr
+
+            const empMap = {}
+            allEmployees?.forEach(e => {
+                if (e.employee_id) empMap[e.employee_id] = e.id
+            })
+
+            const normalizeDate = (dateStr) => {
+                if (!dateStr) return null
+                if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr
+                const parts = dateStr.trim().split(/[-/]/)
+                if (parts.length === 3) {
+                    if (parts[2].length === 4) return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`
+                    if (parts[0].length === 4) return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`
+                }
+                return dateStr
+            }
+
+            const combineDateAndTime = (dateStr, timeStr) => {
+                if (!timeStr) return null
+                const t = timeStr.trim()
+                if (/^\d{2}:\d{2}:\d{2}$/.test(t)) return `${dateStr}T${t}.000Z`
+                if (/^\d{2}:\d{2}$/.test(t)) return `${dateStr}T${t}:00.000Z`
+                return null
+            }
+
+            const getStatusFromHours = (checkIn, checkOut, defaultStatus, dateStr, holidaysList) => {
+                const statusMap = {
+                    'P': 'present', 'A': 'absent', 'WO': 'weekly_off',
+                    'present': 'present', 'absent': 'absent', 'weekly_off': 'weekly_off'
+                }
+                const mappedStatus = statusMap[defaultStatus] || statusMap[defaultStatus?.toUpperCase()]
+
+                const date = new Date(dateStr)
+                const isSunday = date.getDay() === 0
+                const isHoliday = holidaysList.some(h => h.date === dateStr)
+
+                if (mappedStatus === 'weekly_off' || (isSunday && !mappedStatus)) return 'weekly_off'
+                if (isHoliday && !mappedStatus) return 'on_leave'
+
+                if (mappedStatus === 'absent') return 'absent'
+
+                if (checkIn && checkOut) {
+                    const diff = new Date(checkOut) - new Date(checkIn)
+                    const hours = diff / (1000 * 60 * 60)
+                    if (hours <= 4) return 'absent'
+                    if (hours < 8) return 'half_day'
+                    return 'present'
+                }
+
+                if (isSunday) return 'weekly_off'
+                if (isHoliday) return 'on_leave'
+                return mappedStatus || 'absent'
+            }
+
+            const dates = data.map(d => normalizeDate(d.Date)).filter(Boolean)
+            if (dates.length === 0) {
+                throw new Error("No valid dates found in CSV data.")
+            }
+            const minDate = dates.reduce((a, b) => a < b ? a : b)
+            const maxDate = dates.reduce((a, b) => a > b ? a : b)
+
+            const { data: monthLeaves, error: leavesErr } = await supabase
+                .from('leaves')
+                .select('*')
+                .gte('end_date', minDate)
+                .lte('start_date', maxDate)
+            if (leavesErr) throw leavesErr
+
+            const holidaysList = await this.getHolidays()
+
+            for (const row of data) {
+                const empUUID = empMap[row.Employee_ID]
+                if (!empUUID) {
+                    stats.failed++
+                    report.push({ ...row, error: `Employee ID ${row.Employee_ID} not found` })
+                    continue
+                }
+
+                try {
+                    const normalizedDate = normalizeDate(row.Date)
+                    const checkInTime = combineDateAndTime(normalizedDate, row.Check_In)
+                    const checkOutTime = combineDateAndTime(normalizedDate, row.Check_Out)
+                    let calculatedStatus = getStatusFromHours(checkInTime, checkOutTime, row.Status, normalizedDate, holidaysList)
+                    let finalRemarks = row.Remarks || ''
+
+                    const leave = monthLeaves?.find(l =>
+                        l.employee_id === empUUID &&
+                        normalizedDate >= l.start_date &&
+                        normalizedDate <= l.end_date
+                    )
+
+                    if (leave) {
+                        if (leave.status === 'approved') {
+                            if (!checkInTime && !checkOutTime) {
+                                calculatedStatus = 'on_leave'
+                                finalRemarks = 'Approved Leave Sync'
+                            }
+                        } else if (leave.status === 'rejected') {
+                            if (calculatedStatus === 'absent') {
+                                finalRemarks = 'Leave Request Rejected'
+                            }
+                        }
+                    }
+
+                    const { error } = await supabase.from('attendance').upsert({
+                        employee_id: empUUID,
+                        date: normalizedDate,
+                        status: calculatedStatus,
+                        check_in: checkInTime,
+                        check_out: checkOutTime,
+                        remarks: finalRemarks,
+                        created_at: new Date().toISOString()
+                    }, { onConflict: 'employee_id, date' })
+
+                    if (error) throw error
+                    stats.success++
+                } catch (err) {
+                    stats.failed++
+                    report.push({ ...row, error: err.message })
+                }
+            }
+
+            return { stats, report }
+        })
     }
 }

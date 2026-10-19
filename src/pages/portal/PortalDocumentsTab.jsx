@@ -1,9 +1,19 @@
 import { useState, useEffect } from 'react'
 import { Upload, FileText, Image as ImageIcon, Eye, Download, Trash2, X, AlertTriangle } from 'lucide-react'
-import { supabase } from '../../lib/supabase'
 import { generateForm16PDF } from '../../lib/form16Generator'
 import { getIndianFinancialYear } from '../../lib/taxUtils'
-import { applyCompanyFilter, withCompanyScope } from '../../services/tenantScope'
+import {
+    usePortalDocumentsPage,
+    usePortalLtaClaims,
+    usePortalHraValidation,
+    useCreateLtaClaimMutation,
+    useUploadDocumentMutation,
+    useDeleteDocumentMutation
+} from '../../hooks/usePortalData'
+import { employeeService } from '../../services/employeeService'
+import { payrollService } from '../../services/payrollService'
+import { companyService } from '../../services/companyService'
+import { taxService } from '../../services/taxService'
 
 const formatDateSafe = (value, options = { month: 'short', day: '2-digit', year: 'numeric' }, fallback = 'N/A') => {
     if (!value) return fallback
@@ -17,10 +27,52 @@ export default function PortalDocumentsTab({
     toast
 }) {
     const [documentCategory, setDocumentCategory] = useState('tax') // 'tax', 'company', 'personal'
-    const [documents, setDocuments] = useState([])
-    const [documentsTotal, setDocumentsTotal] = useState(0)
     const [docCurrentPage, setDocCurrentPage] = useState(1)
-    const [loading, setLoading] = useState(false) // eslint-disable-line no-unused-vars
+
+    // React Query Gold Standard split hooks
+    const { data: documentsData, refetch: refetchDocs } = usePortalDocumentsPage(
+        viewAsId,
+        docCurrentPage,
+        documentCategory,
+        true
+    )
+    const rawDocuments = documentsData?.documents || []
+    const documents = (() => {
+        if (rawDocuments.length > 0) return rawDocuments
+        if (documentCategory === 'personal') {
+            const fallbackDocs = []
+            if (currentEmployee?.id_proof_url) {
+                fallbackDocs.push({
+                    id: `id-${viewAsId}`,
+                    file_name: currentEmployee.id_proof_url.split('/').pop() || 'ID_Proof',
+                    category: 'Identification',
+                    section: 'personal',
+                    status: 'verified',
+                    uploaded_at: currentEmployee.updated_at || currentEmployee.created_at,
+                    file_size_mb: null,
+                    file_url: currentEmployee.id_proof_url
+                })
+            }
+            if (currentEmployee?.address_proof_url) {
+                fallbackDocs.push({
+                    id: `address-${viewAsId}`,
+                    file_name: currentEmployee.address_proof_url.split('/').pop() || 'Address_Proof',
+                    category: 'Personal Record',
+                    section: 'personal',
+                    status: 'pending',
+                    uploaded_at: currentEmployee.updated_at || currentEmployee.created_at,
+                    file_size_mb: null,
+                    file_url: currentEmployee.address_proof_url
+                })
+            }
+            return fallbackDocs
+        }
+        return []
+    })()
+    
+    const documentsTotal = documentsData?.count || documents.length
+
+    const { data: ltaClaims = [], refetch: refetchLta } = usePortalLtaClaims(viewAsId, true)
 
     // Upload modal states
     const [showUploadModal, setShowUploadModal] = useState(false)
@@ -32,28 +84,22 @@ export default function PortalDocumentsTab({
     // Delete modal state
     const [documentToDelete, setDocumentToDelete] = useState(null)
 
-    // Form 16 & HRA Rent receipt states
-    const [hraExemption, setHraExemption] = useState(0)
-    const [hasRentReceipt, setHasRentReceipt] = useState(false)
+    // HRA validation query & LTA claim mutation
+    const hraValidationQuery = usePortalHraValidation(viewAsId)
+    const hraExemption = hraValidationQuery.data?.hraExemption || 0
+    const hasRentReceipt = hraValidationQuery.data?.hasRentReceipt || 0
     const [generatingForm16, setGeneratingForm16] = useState(false)
 
     // LTA States
-    const [ltaClaims, setLtaClaims] = useState([])
     const [submittingLta, setSubmittingLta] = useState(false)
     const [ltaForm, setLtaForm] = useState({
         amount: '',
         year: getIndianFinancialYear()
     })
 
-    const fetchLtaClaims = async () => {
-        if (!viewAsId) return
-        try {
-            const { data } = await applyCompanyFilter(supabase.from('lta_claims').select('*')).eq('employee_id', viewAsId).order('created_at', { ascending: false })
-            setLtaClaims(data || [])
-        } catch (err) {
-            console.error('Error fetching LTA claims:', err)
-        }
-    }
+
+
+    const createLtaClaimMutation = useCreateLtaClaimMutation(viewAsId)
 
     const handleSubmitLtaClaim = async (e) => {
         e.preventDefault()
@@ -63,119 +109,20 @@ export default function PortalDocumentsTab({
         }
         setSubmittingLta(true)
         try {
-            const { error } = await supabase.from('lta_claims').insert([withCompanyScope({
-                employee_id: viewAsId,
-                financial_year: ltaForm.year,
-                amount_claimed: parseFloat(ltaForm.amount),
-                status: 'pending'
-            })])
-            if (error) throw error
-            toast.success('LTA travel claim submitted for exemption!')
+            await createLtaClaimMutation.mutateAsync({
+                year: ltaForm.year,
+                amount: ltaForm.amount
+            })
             setLtaForm({ amount: '', year: getIndianFinancialYear() })
-            await fetchLtaClaims()
-        } catch (err) {
-            toast.error('Failed to submit claim: ' + err.message)
+            await refetchLta()
+        } catch (_) {
+            // Error is handled by hook
         } finally {
             setSubmittingLta(false)
         }
     }
 
-    useEffect(() => {
-        fetchLtaClaims()
-    }, [viewAsId])
 
-    useEffect(() => {
-        const checkHraAndReceipts = async () => {
-            if (!viewAsId) return
-            const fy = getIndianFinancialYear()
-            try {
-                // Fetch tax declarations
-                const { data: decl } = await applyCompanyFilter(supabase
-                    .from('tax_declarations')
-                    .select('hra_exemption'))
-                    .eq('employee_id', viewAsId)
-                    .eq('financial_year', fy)
-                    .maybeSingle()
-
-                if (decl) {
-                    setHraExemption(Number(decl.hra_exemption) || 0)
-                } else {
-                    setHraExemption(0)
-                }
-
-                // Check documents for category 'Rent Receipt'
-                const { data: docs } = await applyCompanyFilter(supabase
-                    .from('employee_documents')
-                    .select('id'))
-                    .eq('employee_id', viewAsId)
-                    .eq('category', 'Rent Receipt')
-                    .limit(1)
-
-                setHasRentReceipt(docs && docs.length > 0)
-            } catch (err) {
-                console.error('Error fetching tax declaration for HRA validation:', err)
-            }
-        }
-        checkHraAndReceipts()
-    }, [viewAsId, documents])
-
-
-    const fetchDocumentsPage = async (employeeId, page, section, fallbackEmployee = currentEmployee) => {
-        if (!employeeId) return
-        const start = (page - 1) * 4
-        const end = start + 3
-        setLoading(true)
-        try {
-            const { data, error, count } = await applyCompanyFilter(supabase
-                .from('employee_documents')
-                .select('*', { count: 'exact' }))
-                .eq('employee_id', employeeId)
-                .eq('section', section)
-                .order('created_at', { ascending: false })
-                .range(start, end)
-
-            if (error) throw error
-            setDocuments(data || [])
-            setDocumentsTotal(count || 0)
-        } catch {
-            const fallbackDocs = []
-            if (fallbackEmployee?.id_proof_url && section === 'personal') {
-                fallbackDocs.push({
-                    id: `id-${employeeId}`,
-                    file_name: fallbackEmployee.id_proof_url.split('/').pop() || 'ID_Proof',
-                    category: 'Identification',
-                    section: 'personal',
-                    status: 'verified',
-                    uploaded_at: fallbackEmployee.updated_at || fallbackEmployee.created_at,
-                    file_size_mb: null,
-                    file_url: fallbackEmployee.id_proof_url
-                })
-            }
-            if (fallbackEmployee?.address_proof_url && section === 'personal') {
-                fallbackDocs.push({
-                    id: `address-${employeeId}`,
-                    file_name: fallbackEmployee.address_proof_url.split('/').pop() || 'Address_Proof',
-                    category: 'Personal Record',
-                    section: 'personal',
-                    status: 'pending',
-                    uploaded_at: fallbackEmployee.updated_at || fallbackEmployee.created_at,
-                    file_size_mb: null,
-                    file_url: fallbackEmployee.address_proof_url
-                })
-            }
-            setDocuments(fallbackDocs)
-            setDocumentsTotal(fallbackDocs.length)
-        } finally {
-            setLoading(false)
-        }
-    }
-
-    useEffect(() => {
-        if (viewAsId) {
-            fetchDocumentsPage(viewAsId, docCurrentPage, documentCategory)
-        }
-     
-    }, [viewAsId, docCurrentPage, documentCategory])
 
     useEffect(() => {
         setDocCurrentPage(1)
@@ -260,6 +207,9 @@ export default function PortalDocumentsTab({
         }
     }
 
+    const uploadDocumentMutation = useUploadDocumentMutation(viewAsId)
+    const deleteDocumentMutation = useDeleteDocumentMutation(viewAsId)
+
     const handleUploadDocumentBatch = async () => {
         if (!viewAsId || stagedFiles.length === 0 || !uploadCategory) return
         setUploadingDocument(true)
@@ -270,7 +220,6 @@ export default function PortalDocumentsTab({
             personal: 'Personal Record'
         }
         const normalizedCategory = uploadCategory || sectionToCategory[documentCategory]
-        const bucketName = 'employee-documents'
         const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
         let successCount = 0
@@ -281,44 +230,11 @@ export default function PortalDocumentsTab({
             setStagedFiles((prev) => prev.map((f) => f.id === item.id ? { ...f, progress: 60 } : f))
 
             try {
-                const safeFileName = item.file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
-                const storagePath = `${viewAsId}/${Date.now()}_${safeFileName}`
-
-                const { error: uploadError } = await supabase
-                    .storage
-                    .from(bucketName)
-                    .upload(storagePath, item.file, {
-                        contentType: item.file.type,
-                        upsert: false
-                    })
-
-                if (uploadError) throw uploadError
-
-                const { data: publicData } = supabase
-                    .storage
-                    .from(bucketName)
-                    .getPublicUrl(storagePath)
-
-                const payload = {
-                    employee_id: viewAsId,
-                    file_name: item.file.name,
+                await uploadDocumentMutation.mutateAsync({
+                    file: item.file,
                     category: normalizedCategory,
-                    section: documentCategory,
-                    status: 'pending',
-                    file_size_mb: Number((item.file.size / (1024 * 1024)).toFixed(2)),
-                    uploaded_at: new Date().toISOString(),
-                    mime_type: item.file.type,
-                    storage_path: storagePath,
-                    file_url: publicData?.publicUrl || null
-                }
-
-                const { error } = await supabase
-                    .from('employee_documents')
-                    .insert(withCompanyScope(payload))
-                    .select('*')
-                    .single()
-
-                if (error) throw error
+                    section: documentCategory
+                })
 
                 successCount += 1
                 setStagedFiles((prev) => prev.map((f) => f.id === item.id ? { ...f, status: 'completed', progress: 100 } : f))
@@ -329,7 +245,7 @@ export default function PortalDocumentsTab({
 
         setUploadingDocument(false)
         if (successCount > 0) {
-            await fetchDocumentsPage(viewAsId, docCurrentPage, documentCategory)
+            await refetchDocs()
             toast.success(`${successCount} document(s) uploaded successfully.`)
             setTimeout(() => {
                 setShowUploadModal(false)
@@ -343,15 +259,8 @@ export default function PortalDocumentsTab({
     const handleDeleteDocument = async () => {
         if (!documentToDelete?.id) return
         try {
-            if (documentToDelete.storage_path) {
-                await supabase.storage.from('employee-documents').remove([documentToDelete.storage_path])
-            }
-            const { error } = await applyCompanyFilter(supabase
-                .from('employee_documents')
-                .delete())
-                .eq('id', documentToDelete.id)
-            if (error) throw error
-            await fetchDocumentsPage(viewAsId, docCurrentPage, documentCategory)
+            await deleteDocumentMutation.mutateAsync(documentToDelete)
+            await refetchDocs()
             toast.success('Document removed successfully.')
         } catch (error) {
             toast.error(error.message || 'Failed to remove document.')
@@ -366,10 +275,14 @@ export default function PortalDocumentsTab({
             return
         }
         if (doc.storage_path) {
-            const { data, error } = await supabase.storage.from('employee-documents').createSignedUrl(doc.storage_path, 120)
-            if (!error && data?.signedUrl) {
-                window.open(data.signedUrl, '_blank', 'noopener,noreferrer')
-                return
+            try {
+                const signedUrl = await employeeService.getDocumentSignedUrl(doc.storage_path, 120)
+                if (signedUrl) {
+                    window.open(signedUrl, '_blank', 'noopener,noreferrer')
+                    return
+                }
+            } catch (error) {
+                console.error(error)
             }
         }
         toast.error('No file URL found for this document.')
@@ -378,11 +291,12 @@ export default function PortalDocumentsTab({
     const handleDownloadDocument = async (doc) => {
         let fileUrl = doc.file_url
         if (!fileUrl && doc.storage_path) {
-            const { data, error } = await supabase
-                .storage
-                .from('employee-documents')
-                .createSignedUrl(doc.storage_path, 120, { download: doc.file_name || 'document' })
-            if (!error && data?.signedUrl) fileUrl = data.signedUrl
+            try {
+                const signedUrl = await employeeService.getDocumentSignedUrl(doc.storage_path, 120, { download: doc.file_name || 'document' })
+                if (signedUrl) fileUrl = signedUrl
+            } catch (error) {
+                console.error(error)
+            }
         }
         if (!fileUrl) {
             toast.error('No downloadable file found.')
@@ -403,46 +317,18 @@ export default function PortalDocumentsTab({
             const fy = getIndianFinancialYear()
             
             // 1. Fetch employee details
-            const { data: emp, error: empErr } = await applyCompanyFilter(supabase
-                .from('employees')
-                .select('*'))
-                .eq('id', viewAsId)
-                .single()
-            if (empErr) throw empErr
+            const emp = await employeeService.getEmployeeById(viewAsId)
 
             // 2. Fetch tax declaration
-            const { data: declarations, error: declError } = await applyCompanyFilter(supabase
-                .from('tax_declarations')
-                .select('*'))
-                .eq('employee_id', viewAsId)
-                .eq('financial_year', fy)
-            if (declError) throw declError
+            const declarations = await taxService.getEmployeeTaxDeclarations(viewAsId, fy)
             const declaration = declarations?.find(d => d.status === 'approved') || declarations?.[0] || { regime: 'new' }
 
             // 3. Fetch payroll items / runs
             const fyStart = `${fy.split('-')[0]}-04-01`
             const fyEnd = `${Number(fy.split('-')[0]) + 1}-03-31`
             
-            const { data: dbItems, error: itemsError } = await applyCompanyFilter(supabase
-                .from('payroll_items')
-                .select(`
-                    basic_salary,
-                    total_allowances,
-                    total_deductions,
-                    net_salary,
-                    attendance_days,
-                    breakdown,
-                    payroll_runs!inner (
-                        month_year,
-                        status
-                    )
-                `))
-                .eq('employee_id', viewAsId)
-                .eq('payroll_runs.status', 'Completed')
-                .gte('payroll_runs.month_year', fyStart)
-                .lte('payroll_runs.month_year', fyEnd)
+            const dbItems = await payrollService.getEmployeePayrollItemsForFY(viewAsId, fyStart, fyEnd)
 
-            if (itemsError) throw itemsError
             if (!dbItems || dbItems.length === 0) {
                 toast.warning(`No completed payroll records found for you in the financial year ${fy}. Form 16 requires completed payroll runs.`)
                 setGeneratingForm16(false)
@@ -450,14 +336,7 @@ export default function PortalDocumentsTab({
             }
 
             // 4. Fetch company settings
-            const { data: settings, error: settingsError } = await applyCompanyFilter(supabase
-                .from('company_settings')
-                .select('*'))
-                .limit(1)
-            
-            if (settingsError) throw settingsError
-            
-            const companySettings = (settings && settings[0]) || {}
+            const companySettings = await companyService.getCompanySettings() || {}
 
             // 5. Map db items to structure expected by generateForm16PDF
             const payrollRuns = dbItems.map(item => {
@@ -519,7 +398,7 @@ export default function PortalDocumentsTab({
                 address: companySettings.address || [companySettings.city, companySettings.state, companySettings.pincode].filter(Boolean).join(', ') || 'NOT AVAILABLE'
             }
             
-            generateForm16PDF({
+            await generateForm16PDF({
                 employee: mappedEmployee,
                 company: mappedCompany,
                 declaration,

@@ -1,11 +1,11 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import ErrorBoundary from '../components/ErrorBoundary'
 import CompanySwitcher from '../components/CompanySwitcher'
 import BranchSwitcher from '../components/BranchSwitcher'
-import SubscriptionStatusBanner from '../components/SubscriptionStatusBanner'
 import { ROUTE_FEATURES } from '../lib/planFeatures'
+import { SubscriptionHeaderPill } from '../components/SubscriptionStatusBanner'
 import { usePlanEntitlements } from '../hooks/usePlanEntitlements'
 import {
     LayoutDashboard,
@@ -37,21 +37,18 @@ const SidebarItem = ({ to, icon: Icon, label, active }) => (
     <Link
         to={to}
         className={clsx(
-            "flex items-center space-x-3 px-4 py-3 rounded-xl transition-all duration-300 group focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2",
+            "flex items-center space-x-3 px-3.5 py-2.5 rounded-xl transition-all duration-150 group focus:outline-none focus:ring-2 focus:ring-slate-400 text-sm font-medium",
             active
-                ? "bg-slate-900 text-white shadow-lg shadow-slate-200"
-                : "text-gray-600 hover:bg-slate-50 hover:text-slate-900 hover:pl-6"
+                ? "bg-slate-900 text-white shadow-sm font-semibold"
+                : "text-slate-600 hover:bg-slate-100/80 hover:text-slate-900"
         )}
         aria-current={active ? 'page' : undefined}
     >
         <Icon className={clsx(
-            "w-5 h-5 transition-all duration-300",
-            active ? "text-white" : "text-gray-600 group-hover:text-slate-900 group-hover:scale-110"
+            "w-4.5 h-4.5 shrink-0 transition-colors duration-150",
+            active ? "text-white" : "text-slate-400 group-hover:text-slate-700"
         )} />
-        <span className={clsx(
-            "font-bold text-sm transition-all duration-300",
-            !active && "group-hover:tracking-wide"
-        )}>{label}</span>
+        <span className="truncate tracking-tight">{label}</span>
     </Link>
 )
 
@@ -61,6 +58,18 @@ export default function DashboardLayout() {
     const location = useLocation()
     const navigate = useNavigate()
     const [isSidebarOpen, setIsSidebarOpen] = useState(false)
+
+    console.log('[DEBUG] DashboardLayout Rendered!', {
+        userId: user?.id,
+        isAdmin,
+        profileDataExists: !!profileData,
+        pathname: location.pathname
+    })
+
+    useEffect(() => {
+        console.log('[DEBUG] DashboardLayout Mounted!')
+        return () => console.log('[DEBUG] DashboardLayout Unmounted!')
+    }, [])
 
     const handleSignOut = async () => {
         await signOut()
@@ -127,34 +136,33 @@ export default function DashboardLayout() {
                     isSidebarOpen ? "translate-x-0" : "-translate-x-full"
                 )}
             >
-                <div className="h-20 flex items-center px-6 border-b border-gray-100 shrink-0">
-                    <h1 className="text-lg font-semibold text-gray-800 tracking-tight">Payroll Management</h1>
-                </div>
-
-                {/* Profile Card */}
-                <div className="px-4 py-4 shrink-0">
-                    <div className="bg-slate-50 rounded-2xl p-4 relative overflow-hidden group hover:bg-slate-100 transition-all duration-300 border border-transparent hover:border-gray-200">
+                {/* Top Profile Card (KEKA-style clean enterprise header) */}
+                <div className="p-3 border-b border-gray-100 shrink-0">
+                    <div className="bg-slate-50/80 hover:bg-slate-100/80 border border-slate-200/60 rounded-2xl p-3 transition-all duration-200 group">
                         <div className="flex items-center space-x-3">
-                            <div className="w-12 h-12 rounded-full bg-indigo-600 flex items-center justify-center text-white font-bold text-lg shadow-inner group-hover:scale-110 transition-transform duration-300">
+                            <div className="w-10 h-10 rounded-xl bg-linear-to-tr from-indigo-600 to-indigo-500 flex items-center justify-center text-white font-black text-sm shadow-md shadow-indigo-100 shrink-0 group-hover:scale-105 transition-transform">
                                 {profileData?.firstName?.[0] || user?.email?.[0]?.toUpperCase() || 'U'}
                                 {profileData?.lastName?.[0] || ''}
                             </div>
                             <div className="flex-1 min-w-0">
-                                <p className="text-sm font-bold text-gray-900 truncate">{profileData?.firstName || 'System'}</p>
-                                <p className="text-sm font-bold text-gray-900 truncate uppercase mt-[-2px]">{profileData?.lastName || 'Administrator'}</p>
-                                <p className="text-xs text-blue-600 font-medium mt-1 truncate">{profileData?.role || (isAdmin ? 'Admin' : 'Employee')}</p>
+                                <p className="text-sm font-bold text-gray-900 truncate leading-snug">
+                                    {profileData?.firstName ? `${profileData.firstName} ${profileData.lastName || ''}`.trim() : (user?.email?.split('@')[0] || 'User')}
+                                </p>
+                                <div className="flex items-center gap-1.5 mt-1.5">
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold bg-indigo-50 text-indigo-700 capitalize border border-indigo-100/80 tracking-wide">
+                                        {profileData?.role || (isAdmin ? 'Admin' : 'Employee')}
+                                    </span>
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200/70 font-mono tracking-tight">
+                                        {profileData?.employeeId || 'EMP001'}
+                                    </span>
+                                </div>
                             </div>
-                        </div>
-                        <div className="mt-4 flex items-center justify-between">
-                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-600 uppercase tracking-wider">
-                                {isAdmin ? 'Admin' : 'Employee'}
-                            </span>
-                            <span className="text-[10px] font-semibold text-gray-600 group-hover:text-gray-600 transition-colors">{profileData?.employeeId || 'EMP24001'}</span>
                         </div>
                     </div>
                 </div>
 
-                <nav className="p-4 space-y-1 overflow-y-auto flex-1 flex flex-col justify-between min-h-0">
+                {/* Sidebar Navigation */}
+                <nav className="p-3 space-y-1 overflow-y-auto flex-1 flex flex-col justify-between min-h-0">
                     <div className="space-y-1">
                         {navItems.map((item) => (
                             <SidebarItem
@@ -165,14 +173,14 @@ export default function DashboardLayout() {
                         ))}
                     </div>
 
-                    <div className="pt-2 shrink-0">
+                    <div className="pt-2 border-t border-gray-100 shrink-0">
                         <button
                             onClick={handleSignOut}
-                            className="w-full flex items-center space-x-3 px-4 py-2 rounded-xl text-gray-500 hover:bg-rose-50 hover:text-rose-600 hover:pl-6 transition-all duration-300 group focus:outline-none focus:ring-2 focus:ring-rose-500 focus:ring-offset-2 cursor-pointer"
+                            className="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-gray-500 hover:bg-rose-50 hover:text-rose-600 transition-all duration-200 group focus:outline-none focus:ring-2 focus:ring-rose-500 focus:ring-offset-2 cursor-pointer"
                             aria-label="Sign out"
                         >
-                            <LogOut className="w-5 h-5 transition-all duration-300 text-gray-400 group-hover:text-rose-600 group-hover:scale-110" />
-                            <span className="font-bold text-sm transition-all duration-300 group-hover:tracking-wide">Sign Out</span>
+                            <LogOut className="w-4 h-4 transition-colors text-gray-400 group-hover:text-rose-600" />
+                            <span className="font-semibold text-sm transition-colors">Sign Out</span>
                         </button>
                     </div>
                 </nav>
@@ -195,9 +203,10 @@ export default function DashboardLayout() {
 
                     <div className="flex items-center space-x-6">
                         {isAdmin && (
-                            <div className="flex items-center space-x-4">
+                            <div className="flex items-center space-x-3">
                                 {canUseFeature('multi_company') && <CompanySwitcher />}
                                 <BranchSwitcher />
+                                <SubscriptionHeaderPill />
                             </div>
                         )}
                         <div className="flex items-center space-x-2">
@@ -223,7 +232,6 @@ export default function DashboardLayout() {
                 <main className="flex-1 overflow-y-auto p-4 lg:p-8 bg-gray-100">
                     <div className="max-w-7xl mx-auto">
                         <ErrorBoundary>
-                            {isAdmin && <SubscriptionStatusBanner />}
                             <Outlet />
                         </ErrorBoundary>
                     </div>

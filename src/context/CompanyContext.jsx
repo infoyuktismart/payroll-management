@@ -1,10 +1,11 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../lib/supabase'
 import { useToast } from './ToastContext'
 import { useAuth } from './AuthContext'
 import { logger } from '../lib/devLogger'
-import { getActiveCompanyId, setActiveCompanyId as persistActiveCompanyId, getActiveBranchId, setActiveBranchId as persistActiveBranchId } from '../services/tenantScope'
+import { getActiveCompanyId, setActiveCompanyId as persistActiveCompanyId, getActiveBranchId, setActiveBranchId as persistActiveBranchId, syncActiveCompanyToSession } from '../services/tenantScope'
 
 // Dynamic subdomains parsing helper for multi-tenancy
 const getSubdomain = () => {
@@ -46,6 +47,7 @@ export const useCompany = () => {
 export const CompanyProvider = ({ children }) => {
     const { user, isAdmin } = useAuth()
     const toast = useToast()
+    const queryClient = useQueryClient()
     const [company, setCompany] = useState(null)
     const [companies, setCompanies] = useState([])
     const [branches, setBranches] = useState([])
@@ -54,6 +56,18 @@ export const CompanyProvider = ({ children }) => {
     const [loading, setLoading] = useState(true)
     const inFlightFetchRef = useRef({ key: null, promise: null })
     const lastFetchRef = useRef({ key: null, at: 0 })
+
+    console.log('[DEBUG] CompanyProvider Rendered!', {
+        userId: user?.id,
+        isAdmin,
+        activeCompanyId,
+        loading
+    })
+
+    useEffect(() => {
+        console.log('[DEBUG] CompanyProvider Mounted!')
+        return () => console.log('[DEBUG] CompanyProvider Unmounted!')
+    }, [])
 
     const fetchCompanySettings = useCallback(async (preferredCompanyId = getActiveCompanyId(), options = {}) => {
         const force = Boolean(options?.force)
@@ -130,6 +144,8 @@ export const CompanyProvider = ({ children }) => {
             setCompanies(availableCompanies)
             setActiveCompanyIdState(selectedId)
             persistActiveCompanyId(selectedId)
+            // Sync active company to PostgreSQL session for server-side RLS validation
+            if (selectedId) syncActiveCompanyToSession(supabase, selectedId)
 
             const selectedCompany = availableCompanies.find(item => item.id === selectedId) || null
             const selectedSettings = (settingsRes.data || []).find(row => row.company_id === selectedId || row.id === selectedId) || null
@@ -182,19 +198,27 @@ export const CompanyProvider = ({ children }) => {
 
     const switchCompany = useCallback((companyId) => {
         if (!companyId || companyId === activeCompanyId) return
+        
+        // Strict Tenant Isolation: Clear the entire React Query cache 
+        // to prevent any data bleeding or displaying cached data of the previous tenant.
+        queryClient.clear()
+        
         setActiveCompanyIdState(companyId)
         persistActiveCompanyId(companyId)
         setActiveBranchIdState(null)
         persistActiveBranchId(null)
+        // Sync new active company to PostgreSQL session for server-side RLS validation
+        syncActiveCompanyToSession(supabase, companyId)
         fetchCompanySettings(companyId, { force: true })
         toast.success('Company switched.')
-    }, [activeCompanyId, fetchCompanySettings, toast])
+    }, [activeCompanyId, fetchCompanySettings, queryClient, toast])
 
     const switchBranch = useCallback((branchId) => {
+        if ((branchId || null) === (activeBranchId || null)) return
         setActiveBranchIdState(branchId)
         persistActiveBranchId(branchId)
         toast.success('Branch switched.')
-    }, [toast])
+    }, [activeBranchId, toast])
 
     const fetchLegacyCompanySettings = useCallback(async () => {
         try {
@@ -260,7 +284,7 @@ export const CompanyProvider = ({ children }) => {
         }
     }, [company])
 
-    const updateCompany = async (updates) => {
+    const updateCompany = useCallback(async (updates) => {
         try {
             setLoading(true)
             const targetCompanyId = activeCompanyId || company?.company_id || company?.id || getActiveCompanyId()
@@ -343,9 +367,9 @@ export const CompanyProvider = ({ children }) => {
         } finally {
             setLoading(false)
         }
-    }
+    }, [activeCompanyId, company, fetchCompanySettings, toast])
 
-    const value = {
+    const value = useMemo(() => ({
         company,
         companies,
         branches,
@@ -359,7 +383,20 @@ export const CompanyProvider = ({ children }) => {
         refreshCompany: fetchCompanySettings,
         refreshLegacyCompany: fetchLegacyCompanySettings,
         isAdmin
-    }
+    }), [
+        activeBranchId,
+        activeCompanyId,
+        branches,
+        companies,
+        company,
+        fetchCompanySettings,
+        fetchLegacyCompanySettings,
+        isAdmin,
+        loading,
+        switchBranch,
+        switchCompany,
+        updateCompany,
+    ])
 
     return (
         <CompanyContext.Provider value={value}>
