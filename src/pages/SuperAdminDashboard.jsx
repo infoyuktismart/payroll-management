@@ -4,6 +4,7 @@ import { Shield, RefreshCw, ShieldAlert } from 'lucide-react'
 import { formatCurrency } from '../lib/payrollUtils'
 import { useToast } from '../context/ToastContext'
 import { useCompany } from '../context/CompanyContext'
+import { useAuth } from '../context/AuthContext'
 
 // Services & Hooks
 import {
@@ -23,6 +24,7 @@ import SuperAdminLicenseKeys from '../components/superadmin/SuperAdminLicenseKey
 export default function SuperAdminDashboard() {
   const toast = useToast()
   const navigate = useNavigate()
+  const { user } = useAuth()
   const { switchCompany } = useCompany()
   const [actionLoading, setActionLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -161,11 +163,13 @@ export default function SuperAdminDashboard() {
           </div>
           <div className="p-3 bg-white rounded-xl border border-amber-200 font-mono text-xs text-slate-800 overflow-x-auto">
             <code>
-              UPDATE public.profiles SET role = &apos;superadmin&apos; WHERE id = auth.uid();
+              {user?.email
+                ? `SELECT public.promote_user_to_superadmin('${user.email}');`
+                : `UPDATE public.profiles SET role = 'superadmin' WHERE email = 'YOUR_EMAIL';`}
             </code>
           </div>
           <p className="text-[11px] text-amber-700">
-            Run the SQL query above in your Supabase SQL Editor to elevate your user account to
+            Run the SQL function above in your Supabase SQL Editor to elevate your user account to
             superadmin.
           </p>
         </div>
