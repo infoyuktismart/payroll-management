@@ -1,6 +1,7 @@
 import { supabase } from '../lib/supabase'
 import { withRetry } from '../lib/withRetry'
 import { applyCompanyFilter, getActiveCompanyId, withCompanyScope } from './tenantScope'
+import { planEntitlementService } from './planEntitlementService'
 
 // Read queries use the decryption view so PAN / Aadhaar / bank account arrive decrypted.
 // Write queries (insert, update, delete) use the base table; the DB trigger encrypts on write.
@@ -121,6 +122,15 @@ export const employeeService = {
    */
   async createEmployee(payload) {
     return withRetry(async () => {
+      const entitlements = await planEntitlementService.assertActiveSubscription(
+        payload?.company_id
+      )
+      if (!planEntitlementService.canAddUsage(entitlements, 'employees', 1)) {
+        const limit = entitlements.limits?.employees
+        throw new Error(
+          `Your current plan limit of ${limit} active employees has been reached. Please upgrade your subscription or activate a higher tier license.`
+        )
+      }
       const { data, error } = await supabase
         .from('employees')
         .insert([withCompanyScope(payload)])
@@ -140,6 +150,7 @@ export const employeeService = {
    */
   async updateEmployee({ id, payload }) {
     return withRetry(async () => {
+      await planEntitlementService.assertActiveSubscription()
       const companyId = getActiveCompanyId()
       let query = supabase.from('employees').update(payload).eq('id', id)
       if (companyId) query = query.eq('company_id', companyId)
@@ -156,6 +167,7 @@ export const employeeService = {
    */
   async deleteEmployee(id) {
     return withRetry(async () => {
+      await planEntitlementService.assertActiveSubscription()
       const companyId = getActiveCompanyId()
       let query = supabase
         .from('employees')

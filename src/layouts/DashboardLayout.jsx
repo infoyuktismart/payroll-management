@@ -8,6 +8,8 @@ import { ROUTE_FEATURES } from '../lib/planFeatures'
 import { SubscriptionHeaderPill } from '../components/SubscriptionStatusBanner'
 import { usePlanEntitlements } from '../hooks/usePlanEntitlements'
 import SuperAdminWorkspaceBanner from '../components/superadmin/SuperAdminWorkspaceBanner'
+import RedeemLicenseModal from '../components/subscription/RedeemLicenseModal'
+import { useCompany } from '../context/CompanyContext'
 import {
   LayoutDashboard,
   Users,
@@ -32,41 +34,61 @@ import {
   Shield,
   Crown,
   MoreHorizontal,
+  KeyRound,
+  Lock,
 } from 'lucide-react'
 import clsx from 'clsx'
 
-const SidebarItem = ({ to, icon: Icon, label, active, onClick }) => (
+const SidebarItem = ({ to, icon: Icon, label, active, onClick, isItemLocked, badge }) => (
   <Link
     to={to}
     onClick={onClick}
     className={clsx(
-      'flex items-center space-x-3 px-3 py-2.5 rounded-xl transition-all duration-150 group focus:outline-none focus:ring-2 focus:ring-slate-400 text-sm font-semibold',
+      'flex items-center justify-between px-3 py-2.5 rounded-xl transition-all duration-150 group focus:outline-none focus:ring-2 focus:ring-slate-400 text-sm font-semibold',
       active
         ? 'bg-slate-900 text-white shadow-sm'
-        : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
+        : isItemLocked
+          ? 'text-slate-400 hover:bg-slate-50'
+          : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
     )}
     aria-current={active ? 'page' : undefined}
   >
-    <Icon
-      className={clsx(
-        'w-4.5 h-4.5 shrink-0 transition-colors duration-150',
-        active ? 'text-white' : 'text-slate-400 group-hover:text-slate-700'
-      )}
-    />
-    <span className="truncate tracking-tight text-sm font-semibold">{label}</span>
+    <div className="flex items-center space-x-3 min-w-0">
+      <Icon
+        className={clsx(
+          'w-4.5 h-4.5 shrink-0 transition-colors duration-150',
+          active
+            ? 'text-white'
+            : isItemLocked
+              ? 'text-slate-400'
+              : 'text-slate-400 group-hover:text-slate-700'
+        )}
+      />
+      <span className="truncate tracking-tight text-sm font-semibold">{label}</span>
+    </div>
+    {isItemLocked ? (
+      <Lock className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+    ) : badge ? (
+      <span className="px-1.5 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-rose-600 text-white animate-pulse shrink-0">
+        {badge}
+      </span>
+    ) : null}
   </Link>
 )
 
 export default function DashboardLayout() {
   const { signOut, user, isAdmin, profileData, isSuperAdmin: authIsSuperAdmin } = useAuth()
+  const { activeCompanyId } = useCompany()
   const {
     loading: entitlementLoading,
     canUseFeature,
     isSuperAdmin: planIsSuperAdmin,
+    isLocked,
   } = usePlanEntitlements()
   const location = useLocation()
   const navigate = useNavigate()
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
+  const [isRedeemModalOpen, setIsRedeemModalOpen] = useState(false)
 
   const isSuperAdmin = Boolean(
     authIsSuperAdmin ||
@@ -237,6 +259,16 @@ export default function DashboardLayout() {
                   key={item.to}
                   {...item}
                   active={location.pathname === item.to}
+                  isItemLocked={
+                    isLocked &&
+                    !isSuperAdmin &&
+                    !['/subscription-management', '/billing'].includes(item.to)
+                  }
+                  badge={
+                    isLocked && !isSuperAdmin && item.to === '/subscription-management'
+                      ? 'Action'
+                      : null
+                  }
                   onClick={() => setIsSidebarOpen(false)}
                 />
               ))}
@@ -339,11 +371,42 @@ export default function DashboardLayout() {
 
         <main className="flex-1 overflow-y-auto p-4 lg:p-8 bg-gray-100">
           <div className="max-w-7xl mx-auto">
+            {isLocked && !isSuperAdmin && (
+              <div className="mb-6 rounded-2xl border border-rose-300 bg-rose-50 p-4 text-rose-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs animate-in fade-in">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 rounded-xl bg-rose-100 text-rose-700 shrink-0">
+                    <KeyRound className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-wider text-rose-700">
+                      Trial Expired • Core Services Suspended
+                    </p>
+                    <p className="text-xs text-rose-900 font-semibold mt-0.5">
+                      Please activate an enterprise license key or select a plan to restore full
+                      workspace services.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsRedeemModalOpen(true)}
+                  className="px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white font-bold text-xs shadow-sm transition shrink-0 cursor-pointer"
+                >
+                  Activate License Key
+                </button>
+              </div>
+            )}
             <ErrorBoundary>
               <Outlet />
             </ErrorBoundary>
           </div>
         </main>
+
+        <RedeemLicenseModal
+          isOpen={isRedeemModalOpen}
+          onClose={() => setIsRedeemModalOpen(false)}
+          activeCompanyId={activeCompanyId}
+        />
 
         {/* Mobile PWA Bottom Nav */}
         <nav

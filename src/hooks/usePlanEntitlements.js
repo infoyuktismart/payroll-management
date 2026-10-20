@@ -5,38 +5,55 @@ import { useCompany } from '../context/CompanyContext'
 import { useAuth } from '../context/AuthContext'
 
 export const usePlanEntitlements = (options = {}) => {
-    const { activeCompanyId } = useCompany()
-    const { user, isAdmin, profileData } = useAuth()
-    const enabled = Boolean(user && isAdmin && activeCompanyId && options.enabled !== false)
+  const { activeCompanyId } = useCompany()
+  const { user, profileData, isSuperAdmin: authIsSuperAdmin } = useAuth()
+  const isSuperAdmin = Boolean(
+    authIsSuperAdmin ||
+    profileData?.role === 'superadmin' ||
+    user?.user_metadata?.role === 'superadmin'
+  )
+  const enabled = Boolean(user && activeCompanyId && options.enabled !== false)
 
-    const load = useCallback(async () => {
-        if (!enabled) return null
-        return planEntitlementService.getEntitlements(activeCompanyId)
-    }, [activeCompanyId, enabled])
+  const load = useCallback(async () => {
+    if (!enabled) return null
+    return planEntitlementService.getEntitlements(activeCompanyId)
+  }, [activeCompanyId, enabled])
 
-    const query = useQuery({
-        queryKey: ['planEntitlements', activeCompanyId, user?.id, isAdmin],
-        queryFn: load,
-        enabled,
-        staleTime: 5 * 60 * 1000,
-        gcTime: 15 * 60 * 1000,
-        refetchOnMount: false,
-        refetchOnWindowFocus: false,
-    })
+  const query = useQuery({
+    queryKey: ['planEntitlements', activeCompanyId, user?.id, isSuperAdmin],
+    queryFn: load,
+    enabled,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 15 * 60 * 1000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+  })
 
-    const entitlements = enabled ? query.data || null : null
+  const entitlements = enabled ? query.data || null : null
 
-    return useMemo(() => ({
-        loading: enabled ? query.isLoading : false,
-        error: enabled ? query.error : null,
-        entitlements,
-        refresh: query.refetch,
-        isSuperAdmin: profileData?.role === 'superadmin',
-        canUseFeature: (featureKey) => (
-            profileData?.role === 'superadmin'
-                ? true
-                : planEntitlementService.canUseFeature(entitlements, featureKey)
-        ),
-        canAddUsage: (metricKey, increment = 1) => planEntitlementService.canAddUsage(entitlements, metricKey, increment),
-    }), [enabled, entitlements, profileData?.role, query.error, query.isLoading, query.refetch])
+  return useMemo(() => {
+    const isLocked = isSuperAdmin ? false : Boolean(entitlements?.isLocked)
+    return {
+      loading: enabled ? query.isLoading : false,
+      error: enabled ? query.error : null,
+      entitlements,
+      refresh: query.refetch,
+      isSuperAdmin,
+      isLocked,
+      lockReason: isSuperAdmin ? null : entitlements?.lockReason,
+      isTrialExpired: isSuperAdmin ? false : Boolean(entitlements?.isTrialExpired),
+      daysLeft: entitlements?.daysLeft ?? null,
+      trialEndsAt: entitlements?.trialEndsAt ?? null,
+      canUseFeature: (featureKey) => {
+        if (isSuperAdmin) return true
+        if (isLocked) return false
+        return planEntitlementService.canUseFeature(entitlements, featureKey)
+      },
+      canAddUsage: (metricKey, increment = 1) => {
+        if (isSuperAdmin) return true
+        if (isLocked) return false
+        return planEntitlementService.canAddUsage(entitlements, metricKey, increment)
+      },
+    }
+  }, [enabled, entitlements, isSuperAdmin, query.error, query.isLoading, query.refetch])
 }

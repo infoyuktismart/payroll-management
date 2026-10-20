@@ -93,46 +93,73 @@ export default function SubscriptionStatusBanner({ onlyUrgent = false }) {
   }
 
   const isTrial = status.subscription.status === 'trialing'
-  const isUrgent = isTrial && status.daysLeft !== null && status.daysLeft <= 3
+  const isExpired = Boolean(
+    (isTrial && status.daysLeft !== null && status.daysLeft <= 0) ||
+    status.subscription.status === 'trial_expired'
+  )
+  const isUrgent = isTrial && status.daysLeft !== null && status.daysLeft <= 3 && !isExpired
 
   // If onlyUrgent is requested and it's not urgent/expired, do not show intrusive banner
-  if (onlyUrgent && !isUrgent) {
+  if (onlyUrgent && !isUrgent && !isExpired) {
     return null
   }
 
-  const palette = isUrgent
-    ? 'border-amber-200 bg-amber-50 text-amber-950'
-    : 'border-emerald-200 bg-emerald-50 text-emerald-950'
+  const palette = isExpired
+    ? 'border-rose-300 bg-rose-50 text-rose-950'
+    : isUrgent
+      ? 'border-amber-200 bg-amber-50 text-amber-950'
+      : 'border-emerald-200 bg-emerald-50 text-emerald-950'
 
   return (
     <div
-      className={`mb-4 flex flex-col gap-3 rounded-xl border px-4 py-3 lg:flex-row lg:items-center lg:justify-between ${palette}`}
+      className={`mb-4 flex flex-col gap-3 rounded-2xl border px-5 py-4 lg:flex-row lg:items-center lg:justify-between shadow-xs ${palette}`}
     >
       <div className="flex items-start gap-3">
-        <div className="mt-0.5 rounded-lg bg-white/70 p-2">
-          <Crown className={`h-4 w-4 ${isUrgent ? 'text-amber-700' : 'text-emerald-700'}`} />
+        <div className="mt-0.5 rounded-xl bg-white/80 p-2 shadow-xs">
+          {isExpired ? (
+            <AlertTriangle className="h-5 w-5 text-rose-600" />
+          ) : (
+            <Crown className={`h-5 w-5 ${isUrgent ? 'text-amber-700' : 'text-emerald-700'}`} />
+          )}
         </div>
         <div>
           <p className="text-sm font-black">
-            {isTrial
-              ? `${status.plan.name} trial: ${Math.max(status.daysLeft ?? 0, 0)} days left`
-              : `${status.plan.name} subscription: ${status.subscription.status}`}
+            {isExpired
+              ? `${status.plan.name} Trial Expired (${status.daysLeft !== null && status.daysLeft < 0 ? `${Math.abs(status.daysLeft)} days ago` : 'today'})`
+              : isTrial
+                ? `${status.plan.name} trial: ${status.daysLeft} days left`
+                : `${status.plan.name} subscription: ${status.subscription.status}`}
           </p>
-          <p className="mt-1 text-xs font-semibold opacity-80">
-            {status.employeeCount} active employees. Estimated monthly billing is{' '}
-            {formatCurrency(status.amount)}
-            {status.subscription.billing_model === 'per_employee'
-              ? ' using per-employee pricing.'
-              : ' using flat pricing.'}
-            {status.trialEnd ? ` Trial ends ${format(status.trialEnd, 'dd MMM yyyy')}.` : ''}
+          <p className="mt-1 text-xs font-semibold opacity-90 leading-relaxed">
+            {isExpired ? (
+              <>
+                Your trial ended on{' '}
+                <strong>
+                  {status.trialEnd ? format(status.trialEnd, 'dd MMM yyyy') : 'recently'}
+                </strong>
+                . Core HR and payroll services are suspended. Please activate an enterprise license
+                key to restore full access.
+              </>
+            ) : (
+              <>
+                {status.employeeCount} active employees. Estimated monthly billing is{' '}
+                {formatCurrency(status.amount)}
+                {status.subscription.billing_model === 'per_employee'
+                  ? ' using per-employee pricing.'
+                  : ' using flat pricing.'}
+                {status.trialEnd ? ` Trial ends ${format(status.trialEnd, 'dd MMM yyyy')}.` : ''}
+              </>
+            )}
           </p>
         </div>
       </div>
       <Link
         to="/subscription-management"
-        className="inline-flex items-center justify-center rounded-lg bg-slate-950 px-4 py-2 text-xs font-black uppercase tracking-wider text-white hover:bg-black"
+        className={`inline-flex items-center justify-center rounded-xl px-4 py-2.5 text-xs font-black uppercase tracking-wider text-white shadow-sm transition hover:opacity-95 ${
+          isExpired ? 'bg-rose-700 hover:bg-rose-800' : 'bg-slate-950 hover:bg-black'
+        }`}
       >
-        Manage Subscription
+        {isExpired ? 'Activate License Key' : 'Manage Subscription'}
       </Link>
     </div>
   )
@@ -161,21 +188,38 @@ export function SubscriptionHeaderPill() {
   const isTrial = subscription.status === 'trialing'
   const trialEnd = subscription.trial_ends_at ? new Date(subscription.trial_ends_at) : null
   const daysLeft = trialEnd ? differenceInCalendarDays(trialEnd, new Date()) : null
-  const isUrgent = isTrial && daysLeft !== null && daysLeft <= 3
+  const isExpired = Boolean(
+    (isTrial && daysLeft !== null && daysLeft <= 0) || subscription.status === 'trial_expired'
+  )
+  const isUrgent = isTrial && daysLeft !== null && daysLeft <= 3 && !isExpired
 
   return (
     <Link
       to="/subscription-management"
       className={`hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border transition-all duration-150 ${
-        isUrgent
-          ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100 shadow-xs'
-          : 'bg-emerald-50 text-emerald-800 border-emerald-200/90 hover:bg-emerald-100 shadow-xs'
+        isExpired
+          ? 'bg-rose-50 text-rose-800 border-rose-300 hover:bg-rose-100 shadow-xs animate-pulse'
+          : isUrgent
+            ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100 shadow-xs'
+            : 'bg-emerald-50 text-emerald-800 border-emerald-200/90 hover:bg-emerald-100 shadow-xs'
       }`}
-      title="Click to view subscription and billing details"
+      title={
+        isExpired
+          ? 'Trial expired! Click to activate license key'
+          : 'Click to view subscription and billing details'
+      }
     >
-      <Crown className={`w-3.5 h-3.5 ${isUrgent ? 'text-amber-600' : 'text-emerald-600'}`} />
+      {isExpired ? (
+        <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
+      ) : (
+        <Crown className={`w-3.5 h-3.5 ${isUrgent ? 'text-amber-600' : 'text-emerald-600'}`} />
+      )}
       <span>
-        {isTrial ? `${plan.name} Trial • ${Math.max(daysLeft ?? 0, 0)}d left` : `${plan.name}`}
+        {isExpired
+          ? 'Trial Expired • Activate License'
+          : isTrial
+            ? `${plan.name} Trial • ${daysLeft}d left`
+            : `${plan.name}`}
       </span>
     </Link>
   )
