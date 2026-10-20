@@ -4,23 +4,48 @@ import { planEntitlementService } from '../services/planEntitlementService'
 import { useCompany } from '../context/CompanyContext'
 import { useAuth } from '../context/AuthContext'
 
+const getCachedLocked = (companyId) => {
+  if (typeof window === 'undefined' || !companyId) return null
+  try {
+    const raw = localStorage.getItem(`payroll_plan_locked_${companyId}`)
+    return raw !== null ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+const setCachedLocked = (companyId, locked) => {
+  if (typeof window === 'undefined' || !companyId) return
+  try {
+    localStorage.setItem(`payroll_plan_locked_${companyId}`, JSON.stringify(Boolean(locked)))
+  } catch {
+    // ignore
+  }
+}
+
 export const usePlanEntitlements = (options = {}) => {
-  const { activeCompanyId } = useCompany()
+  const { activeCompanyId, loading: companyLoading } = useCompany()
   const { user, profileData, isSuperAdmin: authIsSuperAdmin } = useAuth()
   const isSuperAdmin = Boolean(
     authIsSuperAdmin ||
     profileData?.role === 'superadmin' ||
     user?.user_metadata?.role === 'superadmin'
   )
-  const enabled = Boolean(user && activeCompanyId && options.enabled !== false)
+  const shouldCheck = Boolean(user && !isSuperAdmin && options.enabled !== false)
+  const effectiveCompanyId = activeCompanyId || null
+  const enabled = Boolean(shouldCheck && effectiveCompanyId)
 
   const load = useCallback(async () => {
-    if (!enabled) return null
-    return planEntitlementService.getEntitlements(activeCompanyId)
-  }, [activeCompanyId, enabled])
+    if (!effectiveCompanyId) return null
+    const result = await planEntitlementService.getEntitlements(effectiveCompanyId)
+    if (result && effectiveCompanyId) {
+      setCachedLocked(effectiveCompanyId, result.isLocked)
+    }
+    return result
+  }, [effectiveCompanyId])
 
   const query = useQuery({
-    queryKey: ['planEntitlements', activeCompanyId, user?.id, isSuperAdmin],
+    queryKey: ['planEntitlements', effectiveCompanyId, user?.id, isSuperAdmin],
     queryFn: load,
     enabled,
     staleTime: 5 * 60 * 1000,
@@ -29,13 +54,30 @@ export const usePlanEntitlements = (options = {}) => {
     refetchOnWindowFocus: false,
   })
 
-  const entitlements = enabled ? query.data || null : null
+  const cachedLocked = getCachedLocked(effectiveCompanyId)
+  const entitlements = shouldCheck ? query.data || null : null
 
   return useMemo(() => {
-    const isLocked = isSuperAdmin ? false : Boolean(entitlements?.isLocked)
+    // Loading state is true whenever company or entitlements are in-flight
+    const isLoading = shouldCheck
+      ? companyLoading ||
+        !effectiveCompanyId ||
+        query.isLoading ||
+        (enabled && !query.data && !query.error)
+      : false
+
+    // Determine lock state: prioritize query response; fallback to cached value while loading
+    const isLocked = isSuperAdmin
+      ? false
+      : entitlements
+        ? Boolean(entitlements.isLocked)
+        : cachedLocked !== null
+          ? cachedLocked
+          : false
+
     return {
-      loading: enabled ? query.isLoading : false,
-      error: enabled ? query.error : null,
+      loading: isLoading,
+      error: shouldCheck ? query.error : null,
       entitlements,
       refresh: query.refetch,
       isSuperAdmin,
@@ -55,5 +97,17 @@ export const usePlanEntitlements = (options = {}) => {
         return planEntitlementService.canAddUsage(entitlements, metricKey, increment)
       },
     }
-  }, [enabled, entitlements, isSuperAdmin, query.error, query.isLoading, query.refetch])
+  }, [
+    shouldCheck,
+    companyLoading,
+    effectiveCompanyId,
+    query.isLoading,
+    query.data,
+    query.error,
+    query.refetch,
+    enabled,
+    isSuperAdmin,
+    entitlements,
+    cachedLocked,
+  ])
 }

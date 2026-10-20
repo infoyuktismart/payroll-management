@@ -1,5 +1,6 @@
 import { Navigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import { useCompany } from '../context/CompanyContext'
 import { devLog } from '../lib/devLogger'
 import { ROUTE_FEATURES } from '../lib/planFeatures'
 import { usePlanEntitlements } from '../hooks/usePlanEntitlements'
@@ -16,6 +17,7 @@ export default function ProtectedRoute({ children }) {
     twoFactorChallenge,
     isTwoFactorVerified,
   } = useAuth()
+  const { loading: companyLoading } = useCompany()
   const location = useLocation()
 
   const isSuperAdmin = Boolean(
@@ -38,7 +40,7 @@ export default function ProtectedRoute({ children }) {
         role="status"
         aria-live="polite"
         aria-label="Loading application"
-        className="min-h-screen flex items-center justify-center"
+        className="min-h-screen flex items-center justify-center bg-gray-50"
       >
         <div
           className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"
@@ -69,8 +71,11 @@ export default function ProtectedRoute({ children }) {
     return children
   }
 
-  // While entitlements are resolving for this tenant, show loading state
-  if (entitlementLoading && !entitlements) {
+  // Enterprise Subscription & Workspace Resolution Loading:
+  // If company is still loading, entitlements are in-flight, or neither entitlements nor confirmed lock state are known yet,
+  // hold at the clean loading state. NEVER render the dashboard or application layout prematurely!
+  const isResolvingWorkspace = companyLoading || entitlementLoading || (!entitlements && !isLocked)
+  if (isResolvingWorkspace) {
     return (
       <div
         role="status"
