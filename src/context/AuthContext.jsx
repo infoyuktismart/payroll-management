@@ -347,10 +347,15 @@ export const AuthProvider = ({ children }) => {
       const resolvedFirstName =
         employee?.first_name || meta.first_name || currentUser?.email?.split('@')[0] || 'User'
       const resolvedLastName = employee?.last_name || meta.last_name || ''
-      const isSuperAdminUser = Boolean(meta.role === 'superadmin' || profile?.role === 'superadmin')
-      const resolvedRole =
-        employee?.role ||
-        (isSuperAdminUser ? 'superadmin' : isUserAdmin ? 'Admin' : profile?.role || 'Employee')
+      const isSuperAdminUser = Boolean(
+        meta.role === 'superadmin' ||
+        profile?.role === 'superadmin' ||
+        employee?.role === 'superadmin' ||
+        membership?.role === 'superadmin'
+      )
+      const resolvedRole = isSuperAdminUser
+        ? 'superadmin'
+        : employee?.role || (isUserAdmin ? 'Admin' : profile?.role || 'Employee')
       const resolvedEmpId =
         employee?.employee_id || employee?.registration_id || (isUserAdmin ? 'ADM001' : 'N/A')
 
@@ -364,6 +369,7 @@ export const AuthProvider = ({ children }) => {
       // 6. Self-heal profile in database if confirmed admin (preserving superadmin)
       if (
         isUserAdmin &&
+        !isSuperAdminUser &&
         profile?.role !== 'admin' &&
         profile?.role !== 'superadmin' &&
         meta.role !== 'superadmin'
@@ -603,12 +609,18 @@ export const AuthProvider = ({ children }) => {
       const roleResult = await checkRole(signedInUser.id, signedInUser)
       const userIsSuperAdmin = Boolean(
         meta.role === 'superadmin' ||
-        profileData?.role === 'superadmin' ||
-        (typeof roleResult === 'object' && roleResult?.role === 'superadmin')
+        roleResult?.isSuperAdmin ||
+        roleResult?.profileData?.role === 'superadmin' ||
+        profileData?.role === 'superadmin'
       )
       return {
         ...response,
-        isAdmin: typeof roleResult === 'boolean' ? roleResult : isMetaAdmin,
+        isAdmin:
+          typeof roleResult === 'object'
+            ? roleResult.isUserAdmin
+            : typeof roleResult === 'boolean'
+              ? roleResult
+              : isMetaAdmin,
         isSuperAdmin: userIsSuperAdmin,
       }
     }
@@ -944,7 +956,9 @@ export const AuthProvider = ({ children }) => {
   }, [clearCachedAuthState, expireIfIdle, recordActivity])
 
   const isSuperAdmin = Boolean(
-    profileData?.role === 'superadmin' || user?.user_metadata?.role === 'superadmin'
+    profileData?.role === 'superadmin' ||
+    user?.user_metadata?.role === 'superadmin' ||
+    user?.app_metadata?.role === 'superadmin'
   )
 
   const value = {
