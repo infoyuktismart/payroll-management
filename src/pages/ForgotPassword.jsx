@@ -188,7 +188,7 @@ export default function ForgotPassword() {
                 maxLength={12}
                 placeholder="12345678"
                 value={otpCode}
-                onChange={(e) => setOtpCode(e.target.value)}
+                onChange={(e) => setOtpCode(e.target.value.replace(/[^0-9a-zA-Z]/g, ''))}
                 className="block w-full py-3 px-4 border border-gray-300 rounded-xl text-center text-xl font-mono font-bold tracking-widest text-slate-900 placeholder-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
               />
             </div>
