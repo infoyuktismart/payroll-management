@@ -344,6 +344,7 @@ function LoginForm({ onSwitchToSignup }) {
   const [loading, setLoading] = useState(false)
   const [verifyingOtp, setVerifyingOtp] = useState(false)
   const [resendingOtp, setResendingOtp] = useState(false)
+  const [resetSuccessMessage, setResetSuccessMessage] = useState(false)
 
   const {
     signIn,
@@ -354,6 +355,13 @@ function LoginForm({ onSwitchToSignup }) {
     isTwoFactorVerified,
   } = useAuth()
   const navigate = useNavigate()
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('reset') === 'success') {
+      setResetSuccessMessage(true)
+    }
+  }, [])
 
   const getLoginErrorMessage = (err) => {
     const message = err?.message?.toLowerCase?.() || ''
@@ -509,6 +517,13 @@ function LoginForm({ onSwitchToSignup }) {
   return (
     <>
       <form onSubmit={handleSubmit} className="space-y-3">
+        {resetSuccessMessage && (
+          <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 px-3.5 py-2.5 rounded-xl text-xs sm:text-sm flex items-center gap-2">
+            <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>Password successfully updated! Please sign in with your new password.</span>
+          </div>
+        )}
+
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-3.5 py-2 rounded-xl text-xs sm:text-sm flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />

@@ -57,15 +57,21 @@ const showBootstrapError = (error) => {
 }
 
 const isChunkLoadError = (error) => {
-  const message = error instanceof Error ? `${error.name} ${error.message}` : String(error || '')
-  return /ChunkLoadError|Loading chunk|Failed to fetch dynamically imported module|Importing a module script failed/i.test(message)
+  const message =
+    error instanceof Error
+      ? `${error.name} ${error.message} ${error.stack || ''}`
+      : String(error || '')
+  return /ChunkLoadError|Loading chunk|Failed to fetch dynamically imported module|Importing a module script failed|Strict MIME type checking|MIME type of "text\/html"/i.test(
+    message
+  )
 }
 
 const recoverFromStaleBuild = async (error) => {
   if (!isChunkLoadError(error)) return false
-  if (sessionStorage.getItem('payroll_stale_build_recovered') === 'true') return false
+  const lastAttempt = Number(sessionStorage.getItem('payroll_stale_build_recovered') || 0)
+  if (Date.now() - lastAttempt < 15000) return false
 
-  sessionStorage.setItem('payroll_stale_build_recovered', 'true')
+  sessionStorage.setItem('payroll_stale_build_recovered', String(Date.now()))
   console.warn('[Bootstrap Recovery] Clearing cached app shell after stale chunk error.', error)
 
   try {
@@ -84,6 +90,11 @@ const recoverFromStaleBuild = async (error) => {
   window.location.reload()
   return true
 }
+
+window.addEventListener('vite:preloadError', (event) => {
+  console.warn('[Vite Preload Error] Detected stale chunk load failure, recovering...', event)
+  recoverFromStaleBuild(event?.payload || new Error('Vite chunk preload error'))
+})
 
 window.addEventListener('error', (event) => {
   const error = event.error || event.message
@@ -110,7 +121,7 @@ try {
           {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />}
         </QueryClientProvider>
       </Sentry.ErrorBoundary>
-    </StrictMode>,
+    </StrictMode>
   )
 } catch (error) {
   showBootstrapError(error)

@@ -1,45 +1,94 @@
 import { Component } from 'react'
 import * as Sentry from '@sentry/react'
-import { AlertCircle, RotateCcw } from 'lucide-react'
+import { AlertCircle, RotateCcw, RefreshCw } from 'lucide-react'
+
+const isChunkLoadError = (error) => {
+  const message =
+    error instanceof Error
+      ? `${error.name} ${error.message} ${error.stack || ''}`
+      : String(error || '')
+  return /ChunkLoadError|Loading chunk|Failed to fetch dynamically imported module|Importing a module script failed|Strict MIME type checking|MIME type of "text\/html"/i.test(
+    message
+  )
+}
 
 export default class RouteErrorBoundary extends Component {
-    state = { hasError: false, error: null }
+  state = { hasError: false, error: null }
 
-    static getDerivedStateFromError(error) {
-        return { hasError: true, error }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error, info) {
+    if (isChunkLoadError(error)) {
+      const lastAttempt = Number(sessionStorage.getItem('payroll_chunk_reload_attempted') || 0)
+      const now = Date.now()
+      if (now - lastAttempt > 15000) {
+        sessionStorage.setItem('payroll_chunk_reload_attempted', String(now))
+        window.location.reload()
+        return
+      }
     }
 
-    componentDidCatch(error, info) {
-        if (import.meta.env.PROD) {
-            Sentry.captureException(error, { extra: info })
-        }
+    if (import.meta.env.PROD) {
+      Sentry.captureException(error, { extra: info })
     }
+  }
 
-    render() {
-        if (this.state.hasError) {
-            return (
-                <div className="p-6 border border-red-200 rounded-2xl bg-red-50/50 m-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                    <div className="flex gap-3">
-                        <div className="w-10 h-10 bg-red-100 text-red-600 rounded-xl flex items-center justify-center shrink-0">
-                            <AlertCircle className="w-5 h-5" />
-                        </div>
-                        <div>
-                            <h2 className="text-red-950 font-bold text-sm">This section failed to load</h2>
-                            <p className="text-red-700 text-xs mt-0.5 max-w-lg font-medium leading-relaxed">
-                                {this.state.error?.message || 'An unexpected rendering error occurred in this module.'}
-                            </p>
-                        </div>
-                    </div>
-                    <button
-                        onClick={() => this.setState({ hasError: false, error: null })}
-                        className="flex items-center gap-1.5 text-xs px-4 py-2 border border-red-200 bg-white hover:bg-red-50 active:scale-[0.98] rounded-xl text-red-700 font-bold shadow-sm transition-all shrink-0"
-                    >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                        <span>Retry Section</span>
-                    </button>
-                </div>
-            )
-        }
-        return this.props.children
+  handleReload = () => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then((regs) => regs.forEach((r) => r.unregister()))
     }
+    if (window.caches?.keys) {
+      window.caches
+        .keys()
+        .then((names) => Promise.all(names.map((name) => window.caches.delete(name))))
+    }
+    window.location.reload()
+  }
+
+  render() {
+    if (this.state.hasError) {
+      const isChunkError = isChunkLoadError(this.state.error)
+
+      return (
+        <div className="p-6 border border-red-200 rounded-2xl bg-red-50/50 m-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div className="flex gap-3">
+            <div className="w-10 h-10 bg-red-100 text-red-600 rounded-xl flex items-center justify-center shrink-0">
+              <AlertCircle className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-red-950 font-bold text-sm">
+                {isChunkError ? 'New update available' : 'This section failed to load'}
+              </h2>
+              <p className="text-red-700 text-xs mt-0.5 max-w-lg font-medium leading-relaxed">
+                {isChunkError
+                  ? 'A new version of this module has been deployed. Please reload the page to load it.'
+                  : this.state.error?.message ||
+                    'An unexpected rendering error occurred in this module.'}
+              </p>
+            </div>
+          </div>
+          {isChunkError ? (
+            <button
+              onClick={this.handleReload}
+              className="flex items-center gap-1.5 text-xs px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-sm transition-all shrink-0 cursor-pointer"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Reload App</span>
+            </button>
+          ) : (
+            <button
+              onClick={() => this.setState({ hasError: false, error: null })}
+              className="flex items-center gap-1.5 text-xs px-4 py-2 border border-red-200 bg-white hover:bg-red-50 active:scale-[0.98] rounded-xl text-red-700 font-bold shadow-sm transition-all shrink-0 cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Retry Section</span>
+            </button>
+          )}
+        </div>
+      )
+    }
+    return this.props.children
+  }
 }

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import {
   Mail,
   ArrowLeft,
@@ -25,7 +25,6 @@ export default function ForgotPassword() {
   const [error, setError] = useState('')
   const [resetError, setResetError] = useState('')
   const [resetSuccess, setResetSuccess] = useState(false)
-  const navigate = useNavigate()
 
   const handleSendResetEmail = async (e) => {
     if (e?.preventDefault) e.preventDefault()
@@ -120,10 +119,17 @@ export default function ForgotPassword() {
 
       if (updateError) throw updateError
 
+      // 3. Cleanly clear auth session so user can log in with new credentials freshly
+      try {
+        await supabase.auth.signOut()
+      } catch (signOutErr) {
+        console.warn('Post-reset sign out notice:', signOutErr)
+      }
+
       setResetSuccess(true)
       setTimeout(() => {
-        navigate('/login')
-      }, 2500)
+        window.location.href = '/login?reset=success'
+      }, 2000)
     } catch (err) {
       setResetError(err.message || 'Invalid or expired code. Please verify the code and try again.')
     } finally {
@@ -143,12 +149,15 @@ export default function ForgotPassword() {
             Your password has been updated. You can now sign in with your new password.
           </p>
           <p className="text-sm text-gray-500 mb-6">Redirecting to login...</p>
-          <Link
-            to="/login"
-            className="inline-flex items-center justify-center w-full py-3 px-4 rounded-xl text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 transition"
+          <button
+            type="button"
+            onClick={() => {
+              window.location.href = '/login?reset=success'
+            }}
+            className="inline-flex items-center justify-center w-full py-3 px-4 rounded-xl text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 transition cursor-pointer"
           >
             Sign In Now
-          </Link>
+          </button>
         </div>
       </div>
     )

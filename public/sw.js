@@ -58,6 +58,27 @@ self.addEventListener('fetch', (event) => {
     return
   }
 
+  // Network-first for navigation requests so new app builds/chunks are picked up immediately
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const responseToCache = networkResponse.clone()
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(event.request, responseToCache)
+            })
+          }
+          return networkResponse
+        })
+        .catch(async () => {
+          const cached = (await caches.match('/index.html')) || (await caches.match('/'))
+          return cached || new Response('', { status: 503, statusText: 'Offline' })
+        })
+    )
+    return
+  }
+
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {
       if (cachedResponse) {
@@ -66,12 +87,23 @@ self.addEventListener('fetch', (event) => {
 
       return fetch(event.request)
         .then((networkResponse) => {
-          // Don't cache non-successful responses or API calls
+          // Don't cache non-successful responses or non-basic types
           if (
             !networkResponse ||
             networkResponse.status !== 200 ||
             networkResponse.type !== 'basic'
           ) {
+            return networkResponse
+          }
+
+          // Prevent poisoning cache: never cache an HTML response for script or asset chunks
+          const contentType = networkResponse.headers.get('content-type') || ''
+          const url = event.request.url.toLowerCase()
+          const isScript =
+            url.endsWith('.js') ||
+            url.includes('/assets/') ||
+            event.request.destination === 'script'
+          if (isScript && contentType.includes('text/html')) {
             return networkResponse
           }
 
@@ -84,10 +116,6 @@ self.addEventListener('fetch', (event) => {
           return networkResponse
         })
         .catch(() => {
-          if (event.request.mode === 'navigate') {
-            return caches.match('/index.html')
-          }
-
           return new Response('', { status: 503, statusText: 'Offline' })
         })
     })

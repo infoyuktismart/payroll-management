@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useNavigate, Link, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Lock, CheckCircle, AlertCircle, KeyRound, Mail, Eye, EyeOff } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
@@ -15,7 +15,6 @@ export default function ResetPassword() {
   const [success, setSuccess] = useState(false)
   const [checkingSession, setCheckingSession] = useState(true)
   const [hasValidSession, setHasValidSession] = useState(false)
-  const navigate = useNavigate()
 
   useEffect(() => {
     let mounted = true
@@ -99,10 +98,17 @@ export default function ResetPassword() {
 
       if (updateError) throw updateError
 
+      // Cleanly clear auth session so user can log in with new credentials freshly
+      try {
+        await supabase.auth.signOut()
+      } catch (signOutErr) {
+        console.warn('Post-reset sign out notice:', signOutErr)
+      }
+
       setSuccess(true)
       setTimeout(() => {
-        navigate('/login')
-      }, 2500)
+        window.location.href = '/login?reset=success'
+      }, 2000)
     } catch (err) {
       setError(err.message || 'Failed to reset password. Please check your code and try again.')
     } finally {
@@ -120,12 +126,15 @@ export default function ResetPassword() {
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Password Reset Successful!</h1>
           <p className="text-gray-600 mb-6">Your password has been updated successfully.</p>
           <p className="text-sm text-gray-500 mb-6">Redirecting to login page...</p>
-          <Link
-            to="/login"
-            className="inline-flex items-center justify-center w-full py-3 px-4 rounded-xl text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 transition"
+          <button
+            type="button"
+            onClick={() => {
+              window.location.href = '/login?reset=success'
+            }}
+            className="inline-flex items-center justify-center w-full py-3 px-4 rounded-xl text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 transition cursor-pointer"
           >
             Sign In Now
-          </Link>
+          </button>
         </div>
       </div>
     )
